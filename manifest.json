@@ -4,8 +4,8 @@
   "description": "Gestão financeira escolar — Colégio Objectivo",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#0A0F1E",
-  "theme_color": "#0A0F1E",
+  "background_color": "#F2F2F7",
+  "theme_color": "#F2F2F7",
   "orientation": "portrait",
   "icons": [
     {
