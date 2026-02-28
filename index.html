@@ -422,25 +422,72 @@ body{font-family:var(--f);font-size:16px;line-height:1.5;background:var(--bg);co
 </div>
 
 <script>
-/* Lock screen functions — definidas antes do HTML para evitar ReferenceError */
-var _lockInput = '';
-var LOCK_PIN = '191291';
-function lockKey(d){ if(_lockInput.length>=6)return; _lockInput+=d; _updateDots(); if(_lockInput.length===6) setTimeout(_checkPin,80); }
-function lockDel(){ _lockInput=_lockInput.slice(0,-1); _updateDots(); }
-function lockClear(){ _lockInput=''; _updateDots(); var e=document.getElementById('lock-error'); if(e) e.style.display='none'; }
-function _updateDots(){ for(var i=0;i<6;i++){ var d=document.getElementById('ld-'+i); if(!d)return; d.classList.toggle('filled',i<_lockInput.length); d.classList.remove('error'); } }
-function _checkPin(){
-  if(_lockInput===LOCK_PIN){
-    sessionStorage.setItem('sl-auth','1');
-    var ls=document.getElementById('lock-screen');
-    ls.style.animation='lockUnlock .35s ease forwards';
-    setTimeout(function(){ ls.style.display='none'; if(typeof _loadAppData==='function') _loadAppData(); },340);
-  } else {
-    for(var i=0;i<6;i++){ var d=document.getElementById('ld-'+i); if(d) d.classList.add('error'); }
-    var e=document.getElementById('lock-error'); if(e) e.style.display='block';
-    setTimeout(function(){ _lockInput=''; _updateDots(); },800);
+/* Lock screen — event delegation, sem onclick inline */
+document.addEventListener('DOMContentLoaded', function() {
+  var _input = '';
+  var PIN = '191291';
+
+  function dots() {
+    for (var i = 0; i < 6; i++) {
+      var d = document.getElementById('ld-' + i);
+      if (!d) continue;
+      d.classList.toggle('filled', i < _input.length);
+      d.classList.remove('error');
+    }
   }
-}
+
+  function check() {
+    if (_input === PIN) {
+      sessionStorage.setItem('sl-auth', '1');
+      var ls = document.getElementById('lock-screen');
+      ls.style.animation = 'lockUnlock .35s ease forwards';
+      setTimeout(function() {
+        ls.style.display = 'none';
+        if (typeof _loadAppData === 'function') _loadAppData();
+      }, 340);
+    } else {
+      for (var i = 0; i < 6; i++) {
+        var d = document.getElementById('ld-' + i);
+        if (d) d.classList.add('error');
+      }
+      var e = document.getElementById('lock-error');
+      if (e) e.style.display = 'block';
+      setTimeout(function() { _input = ''; dots(); }, 800);
+    }
+  }
+
+  // Event delegation on the numpad container
+  var ls = document.getElementById('lock-screen');
+  if (ls) {
+    ls.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-key]');
+      if (!btn) return;
+      var k = btn.getAttribute('data-key');
+      if (k === 'del') {
+        _input = _input.slice(0, -1); dots();
+      } else if (k === 'clear') {
+        _input = ''; dots();
+        var err = document.getElementById('lock-error');
+        if (err) err.style.display = 'none';
+      } else if (_input.length < 6) {
+        _input += k; dots();
+        if (_input.length === 6) setTimeout(check, 80);
+      }
+    });
+  }
+
+  // Keyboard support
+  document.addEventListener('keydown', function(e) {
+    var ls = document.getElementById('lock-screen');
+    if (!ls || ls.style.display === 'none') return;
+    if (e.key >= '0' && e.key <= '9' && _input.length < 6) {
+      _input += e.key; dots();
+      if (_input.length === 6) setTimeout(check, 80);
+    } else if (e.key === 'Backspace') {
+      _input = _input.slice(0, -1); dots();
+    }
+  });
+});
 </script>
 <div id="lock-screen" style="
   position:fixed;inset:0;z-index:9999;
@@ -492,18 +539,18 @@ function _checkPin(){
 
   <!-- Numpad -->
   <div style="display:grid;grid-template-columns:repeat(3,72px);gap:12px">
-    <button class="lock-key" onclick="lockKey('1')">1</button>
-    <button class="lock-key" onclick="lockKey('2')">2</button>
-    <button class="lock-key" onclick="lockKey('3')">3</button>
-    <button class="lock-key" onclick="lockKey('4')">4</button>
-    <button class="lock-key" onclick="lockKey('5')">5</button>
-    <button class="lock-key" onclick="lockKey('6')">6</button>
-    <button class="lock-key" onclick="lockKey('7')">7</button>
-    <button class="lock-key" onclick="lockKey('8')">8</button>
-    <button class="lock-key" onclick="lockKey('9')">9</button>
-    <button class="lock-key lock-key-sm" onclick="lockClear()" style="font-size:12px;color:rgba(255,255,255,.5)">LIMPAR</button>
-    <button class="lock-key" onclick="lockKey('0')">0</button>
-    <button class="lock-key lock-key-del" onclick="lockDel()">⌫</button>
+    <button class="lock-key" data-key="1">1</button>
+    <button class="lock-key" data-key="2">2</button>
+    <button class="lock-key" data-key="3">3</button>
+    <button class="lock-key" data-key="4">4</button>
+    <button class="lock-key" data-key="5">5</button>
+    <button class="lock-key" data-key="6">6</button>
+    <button class="lock-key" data-key="7">7</button>
+    <button class="lock-key" data-key="8">8</button>
+    <button class="lock-key" data-key="9">9</button>
+    <button class="lock-key lock-key-sm" data-key="clear" style="font-size:12px;color:rgba(255,255,255,.5)">LIMPAR</button>
+    <button class="lock-key" data-key="0">0</button>
+    <button class="lock-key lock-key-del" data-key="del">⌫</button>
   </div>
 </div>
 
