@@ -2924,206 +2924,288 @@ function openEmailSheet(){
 async function generateAndEmail(){
   const to = $('email-to').value.trim();
   if(!to){ toast('⚠️ Informe o destinatário'); return; }
-
   const btn = $('email-gen-btn');
   btn.disabled = true;
   const setStatus = (msg) => {
     $('email-gen-status').style.display = 'block';
-    $('email-gen-status').innerHTML = `<span class="spinner" style="display:inline-block;margin-right:8px"></span>${msg}`;
+    $('email-gen-status').innerHTML = '<span class="spinner" style="display:inline-block;margin-right:8px"></span>'+msg;
   };
-
+  const showErr = (msg) => {
+    $('email-gen-status').style.display = 'block';
+    $('email-gen-status').innerHTML = '<span style="color:#ef4444">❌ '+msg+'</span>';
+    btn.disabled = false;
+  };
   try {
-    // ── 1. Garantir que o relatório está renderizado ──────────────────────────
-    setStatus('Gerando relatório…');
-    if(S.tab !== 'rpt'){ nav('rpt'); await new Promise(r=>setTimeout(r,600)); }
-    if(!$('rpt-content').querySelector('.rpt-card')){ await renderReport(); await new Promise(r=>setTimeout(r,400)); }
+    const yr       = S.year === 'all' ? 'Todos os anos' : String(S.year);
+    const now      = new Date().toLocaleDateString('pt-BR',{year:'numeric',month:'long',day:'numeric'});
+    const bodyNote = $('email-body').value || 'Segue o relatório.';
+    const hideFcst   = $('email-hide-fcst') ? $('email-hide-fcst').checked : false;
+    const hideAccord = $('email-hide-accord') ? $('email-hide-accord').checked : false;
+    const MF2 = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const fmt2 = function(v){ return v ? ('R$ '+Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})) : '—'; };
 
-    const hideFcst = $('email-hide-fcst').checked;
-    const hideAccord = $('email-hide-accord')?.checked;
-    if(hideFcst)   document.querySelectorAll('.fcst-group').forEach(el=>el.style.display='none');
-    if(hideAccord) document.querySelectorAll('.accord-col, .accord-h').forEach(el=>el.style.display='none');
-    await new Promise(r=>setTimeout(r,150));
+    // 1. Buscar dados
+    setStatus('Buscando dados…');
+    const allTxs = await dbAll('txs');
+    const years2 = S.year === 'all'
+      ? [...new Set(allTxs.map(function(r){return r.academicYear;}))]
+          .filter(Boolean).sort(function(a,b){return a-b;})
+      : [Number(S.year)];
+    const txsScope = S.year === 'all' ? allTxs : allTxs.filter(function(r){return r.academicYear===Number(S.year);});
+    const nonFcst  = txsScope.filter(function(r){return r.type!=='FORECAST';});
+    const totalPaid= nonFcst.filter(function(r){return r.type==='PAID';}).reduce(function(s,r){return s+Number(r.amount);},0);
+    const totalRec = nonFcst.filter(function(r){return r.type==='RECEIVED';}).reduce(function(s,r){return s+Number(r.amount);},0);
+    const deficit  = totalPaid - totalRec;
+    const cobPai   = totalPaid > 0 ? (totalRec/totalPaid*100).toFixed(1) : '0.0';
+    const accordTot= getAccordTarget(totalPaid);
 
-    const yr = S.year==='all' ? 'Todos os anos' : String(S.year);
-    const now = new Date().toLocaleDateString('pt-BR',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-    const subject = $('email-subject').value || `Relatório de Pagamentos ${yr}`;
-    const bodyNote = $('email-body').value || 'Segue o relatório de pagamentos.';
-
-    // ── 2. Gerar PDF do relatório ─────────────────────────────────────────────
+    // 2. Gerar PDF
     setStatus('Gerando PDF…');
-    const rptNode = $('rpt-content');
-
-    // Capture report as canvas then convert to PDF
-    const canvas = await html2canvas(rptNode, {
-      scale: 1.5,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      logging: false,
-      windowWidth: 900
-    });
-
-    // Restore fcst + accord cols
-    if(hideFcst   && S.fcstVisible)   document.querySelectorAll('.fcst-group').forEach(el=>el.style.display='');
-    if(hideAccord && S.accordVisible) document.querySelectorAll('.accord-col, .accord-h').forEach(el=>el.style.display='');
-
     const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: 'a4' });
-    const pageW = pdf.internal.pageSize.getWidth();
-    const pageH = pdf.internal.pageSize.getHeight();
-    const imgW  = pageW;
-    const imgH  = (canvas.height * pageW) / canvas.width;
+    const pdf2 = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+    const PW = pdf2.internal.pageSize.getWidth(), PH = pdf2.internal.pageSize.getHeight();
+    const ML = 14, MR = 14;
+    let curY = 0;
 
-    // Add title header
-    pdf.setFillColor(59, 91, 219);
-    pdf.rect(0, 0, pageW, 28, 'F');
-    pdf.setTextColor(255,255,255);
-    pdf.setFontSize(13);
-    pdf.setFont('helvetica','bold');
-    pdf.text('Gerenciamento de Pagamentos D&B — ' + yr, 12, 18);
-    pdf.setFontSize(8);
-    pdf.setFont('helvetica','normal');
-    pdf.text(now, pageW - 12, 18, { align: 'right' });
+    function drawHdr2() {
+      pdf2.setFillColor(59,91,219); pdf2.rect(0,0,PW,24,'F');
+      pdf2.setTextColor(255,255,255);
+      pdf2.setFont('helvetica','bold'); pdf2.setFontSize(10);
+      pdf2.text('Gerenciamento de Pagamentos D&B — '+yr, ML, 16);
+      pdf2.setFont('helvetica','normal'); pdf2.setFontSize(7);
+      pdf2.text(now, PW-MR, 16, {align:'right'});
+      pdf2.setTextColor(30,30,30); curY = 28;
+    }
+    function chkY2(n) { if(curY+n > PH-10){ pdf2.addPage(); drawHdr2(); } }
+    drawHdr2();
 
-    // Add report image — paginate if needed
-    const startY = 32;
-    let remaining = imgH;
-    let srcY = 0;
-    let isFirst = true;
-    while(remaining > 0) {
-      const available = isFirst ? (pageH - startY) : pageH;
-      const sliceH = Math.min(remaining, available);
-      const sliceCanvas = document.createElement('canvas');
-      sliceCanvas.width = canvas.width;
-      sliceCanvas.height = (sliceH / imgW) * canvas.width;
-      const ctx = sliceCanvas.getContext('2d');
-      ctx.drawImage(canvas, 0, srcY * (canvas.width / imgW), canvas.width, sliceCanvas.height, 0, 0, canvas.width, sliceCanvas.height);
-      const sliceImg = sliceCanvas.toDataURL('image/jpeg', 0.85);
-      pdf.addImage(sliceImg, 'JPEG', 0, isFirst ? startY : 0, pageW, sliceH);
-      srcY += sliceH;
-      remaining -= sliceH;
-      if(remaining > 0) { pdf.addPage(); isFirst = false; }
+    // Summary box
+    pdf2.setFillColor(240,244,255); pdf2.rect(ML,curY,PW-ML-MR,28,'F');
+    var smCols2 = [
+      {l:'TOTAL PAGO', v:fmt2(totalPaid), c:[180,40,40]},
+      {l:'PENSÃO RECEBIDA', v:fmt2(totalRec), c:[40,120,70]},
+      {l:'DÉFICIT', v:fmt2(deficit), c:[deficit>0?180:40, deficit>0?40:110, deficit>0?40:70]},
+      {l:'COBERTURA PAI', v:cobPai+'%', c:[30,60,180]},
+    ];
+    if(!hideAccord && accordTot>0) smCols2.push({l:'META ACORDO', v:fmt2(accordTot), c:[80,80,80]});
+    var scw2 = (PW-ML-MR)/smCols2.length;
+    smCols2.forEach(function(sc,i){
+      var sx=ML+i*scw2;
+      pdf2.setFontSize(5.5); pdf2.setFont('helvetica','normal'); pdf2.setTextColor(120,120,140);
+      pdf2.text(sc.l, sx+scw2/2, curY+9, {align:'center'});
+      pdf2.setFontSize(8.5); pdf2.setFont('helvetica','bold'); pdf2.setTextColor(sc.c[0],sc.c[1],sc.c[2]);
+      pdf2.text(sc.v, sx+scw2/2, curY+22, {align:'center'});
+    });
+    curY += 32;
+
+    // Columns
+    var cols2 = [
+      {h:'Mês',        w:24, a:'left'},
+      {h:'Mensalid.',  w:50, a:'right'},
+      {h:'Matrícula',  w:46, a:'right'},
+      {h:'Material',   w:44, a:'right'},
+      {h:'Uniforme',   w:44, a:'right'},
+      {h:'Extra',      w:36, a:'right'},
+      {h:'Subtotal',   w:52, a:'right', b:true},
+      {h:'Pensão',     w:50, a:'right', g:true},
+      {h:'Data Pgto',  w:46, a:'center'},
+      {h:'Diferença',  w:50, a:'right'},
+      {h:'% Pai',      w:34, a:'right'},
+    ];
+    if(!hideAccord) cols2.push({h:'Acordado', w:48, a:'right', g:true});
+    if(!hideFcst) {
+      cols2.push({h:'≈Mensalid',w:44,a:'right',f:true},{h:'≈Matríc.',w:40,a:'right',f:true},
+        {h:'≈Material',w:40,a:'right',f:true},{h:'≈Uniforme',w:40,a:'right',f:true},
+        {h:'≈Extra',w:32,a:'right',f:true},{h:'≈SubTot',w:46,a:'right',f:true},{h:'≈Pensão',w:44,a:'right',f:true});
+    }
+    var totW2 = cols2.reduce(function(s,c2){return s+c2.w;},0);
+    var sc3 = (PW-ML-MR)/totW2;
+    cols2.forEach(function(c2){c2.w*=sc3;});
+
+    function drawColHdrs2() {
+      chkY2(12);
+      pdf2.setFillColor(220,228,255); pdf2.rect(ML,curY,PW-ML-MR,11,'F');
+      var hx=ML;
+      cols2.forEach(function(col){
+        pdf2.setFont('helvetica','bold'); pdf2.setFontSize(6);
+        pdf2.setTextColor(col.f?100:40, col.f?60:60, col.f?180:160);
+        var tx = col.a==='right'?hx+col.w-2:col.a==='center'?hx+col.w/2:hx+2;
+        pdf2.text(col.h, tx, curY+8, {align:col.a==='center'?'center':col.a==='right'?'right':'left', maxWidth:col.w-2});
+        hx+=col.w;
+      });
+      curY+=13;
     }
 
-    const pdfBlob = pdf.output('blob');
-    const htmlContent = null; // not used anymore — keeping variable for compat
+    years2.forEach(function(yrNum){
+      var yrTxs    = allTxs.filter(function(r){return r.academicYear===yrNum;});
+      var confirmed2= yrTxs.filter(function(r){return r.type!=='FORECAST';});
+      var forecasts2= yrTxs.filter(function(r){return r.type==='FORECAST';});
+      var byM={}, pensaoM={}, fcstPM={}, fcstRM={}, payDM={}, lateM={};
+      confirmed2.filter(function(r){return r.type==='PAID';}).forEach(function(r){
+        var m=r.academicMonth;
+        if(!byM[m]) byM[m]={mensalidade:0,matricula:0,material:0,uniforme:0,extra:0};
+        if(byM[m][r.categoryKey]!==undefined) byM[m][r.categoryKey]+=r.amount;
+      });
+      confirmed2.filter(function(r){return r.type==='RECEIVED';}).forEach(function(r){
+        var m=r.academicMonth; pensaoM[m]=(pensaoM[m]||0)+r.amount;
+        if(r.isLate) lateM[m]=true;
+        if(!payDM[m]||r.date>payDM[m]) payDM[m]=r.date;
+      });
+      forecasts2.filter(function(r){return r.categoryKey!=='pensao';}).forEach(function(r){
+        var m=r.academicMonth;
+        if(!fcstPM[m]) fcstPM[m]={mensalidade:0,matricula:0,material:0,uniforme:0,extra:0};
+        if(fcstPM[m][r.categoryKey]!==undefined) fcstPM[m][r.categoryKey]+=r.amount;
+      });
+      forecasts2.filter(function(r){return r.categoryKey==='pensao';}).forEach(function(r){
+        fcstRM[r.academicMonth]=(fcstRM[r.academicMonth]||0)+r.amount;
+      });
 
-    // ── 3. Upload HTML para Supabase Storage ─────────────────────────────────
-    setStatus('Enviando relatório para a nuvem…');
-    const filename = `relatorio-${String(yr).replace(/\s+/g,'-')}-${Date.now()}.pdf`;
-    const blob = pdfBlob;
-    const file = new File([blob], filename, { type: 'application/pdf' });
+      chkY2(24+12+10*10);
+      pdf2.setFillColor(59,91,219); pdf2.rect(ML,curY,PW-ML-MR,11,'F');
+      pdf2.setTextColor(255,255,255); pdf2.setFont('helvetica','bold'); pdf2.setFontSize(7.5);
+      pdf2.text(String(yrNum), ML+4, curY+8);
+      curY+=13; drawColHdrs2();
 
-    let reportUrl = null;
-    let storageErrMsg = null;
+      var tot2={mensalidade:0,matricula:0,material:0,uniforme:0,extra:0,sub:0,recv:0},totAcc2=0,totFP2=0,totFR2=0;
+      for(var m=1;m<=12;m++){
+        var cats=byM[m]||{}, recv=pensaoM[m]||0, fcP=fcstPM[m]||{}, fcR=fcstRM[m]||0;
+        var sub=(cats.mensalidade||0)+(cats.matricula||0)+(cats.material||0)+(cats.uniforme||0)+(cats.extra||0);
+        var allFcstZero=Object.values(fcP).every(function(v){return v===0;});
+        if(sub===0&&recv===0&&allFcstZero&&!fcR) continue;
+        var diff2=sub-recv, pct2=sub>0?(recv/sub*100):0, accord2=getAccordTarget(sub);
+        var fcPtot2=Object.values(fcP).reduce(function(a,b){return a+b;},0);
+        var dateTxt2=payDM[m]?(payDM[m].substring(5,7)+'/'+payDM[m].substring(0,4)+(lateM[m]?'*':'')):'—';
+        tot2.mensalidade+=(cats.mensalidade||0); tot2.matricula+=(cats.matricula||0);
+        tot2.material+=(cats.material||0); tot2.uniforme+=(cats.uniforme||0);
+        tot2.extra+=(cats.extra||0); tot2.sub+=sub; tot2.recv+=recv;
+        totAcc2+=accord2; totFP2+=fcPtot2; totFR2+=fcR;
 
-    // Tenta criar bucket se não existir
-    const { error: bucketErr } = await _sb.storage.createBucket('reports', {
-      public: true, fileSizeLimit: 10485760
+        chkY2(9.5);
+        pdf2.setFillColor(m%2===0?248:255,m%2===0?249:255,255);
+        pdf2.rect(ML,curY,PW-ML-MR,9.5,'F');
+        var vals2=[
+          MF2[m-1],
+          cats.mensalidade?fmt2(cats.mensalidade):'—', cats.matricula?fmt2(cats.matricula):'—',
+          cats.material?fmt2(cats.material):'—', cats.uniforme?fmt2(cats.uniforme):'—',
+          cats.extra?fmt2(cats.extra):'—', sub?fmt2(sub):'—', recv?fmt2(recv):'—', dateTxt2,
+          diff2!==0?(diff2>0?'-':'+')+fmt2(Math.abs(diff2)):'—',
+          sub>0?pct2.toFixed(1)+'%':'—',
+        ];
+        if(!hideAccord) vals2.push(accord2?fmt2(accord2):'—');
+        if(!hideFcst) vals2.push(
+          fcP.mensalidade?fmt2(fcP.mensalidade):'—', fcP.matricula?fmt2(fcP.matricula):'—',
+          fcP.material?fmt2(fcP.material):'—', fcP.uniforme?fmt2(fcP.uniforme):'—',
+          fcP.extra?fmt2(fcP.extra):'—', fcPtot2?fmt2(fcPtot2):'—', fcR?fmt2(fcR):'—'
+        );
+        pdf2.setFontSize(6.5);
+        var rx2=ML;
+        vals2.forEach(function(v,ci){
+          var col=cols2[ci];
+          if(ci===6) pdf2.setTextColor(30,30,100);
+          else if(ci===7) pdf2.setTextColor(recv>0?40:150,recv>0?120:150,recv>0?70:150);
+          else if(ci===9) pdf2.setTextColor(diff2>0?170:40,diff2>0?40:110,diff2>0?40:70);
+          else if(col&&col.f) pdf2.setTextColor(90,50,170);
+          else if(col&&col.g) pdf2.setTextColor(40,110,60);
+          else pdf2.setTextColor(50,50,50);
+          pdf2.setFont('helvetica',ci===6?'bold':'normal');
+          var talign = col.a==='center'?'center':col.a==='right'?'right':'left';
+          var tx2b = col.a==='right'?rx2+col.w-2:col.a==='center'?rx2+col.w/2:rx2+2;
+          pdf2.text(v, tx2b, curY+7, {align:talign, maxWidth:col.w-2});
+          rx2+=col.w;
+        });
+        pdf2.setDrawColor(225,230,245); pdf2.setLineWidth(0.2);
+        pdf2.line(ML,curY+9.5,PW-MR,curY+9.5);
+        curY+=9.5;
+      }
+      // Total row
+      chkY2(12);
+      pdf2.setFillColor(210,220,255); pdf2.rect(ML,curY,PW-ML-MR,11,'F');
+      pdf2.setFont('helvetica','bold'); pdf2.setFontSize(6.5); pdf2.setTextColor(30,50,160);
+      var tVals2=[
+        'TOTAL',
+        fmt2(tot2.mensalidade),fmt2(tot2.matricula),fmt2(tot2.material),fmt2(tot2.uniforme),fmt2(tot2.extra),
+        fmt2(tot2.sub),fmt2(tot2.recv),'',
+        (tot2.sub-tot2.recv)!==0?(tot2.sub>tot2.recv?'-':'+')+fmt2(Math.abs(tot2.sub-tot2.recv)):'—',
+        tot2.sub>0?(tot2.recv/tot2.sub*100).toFixed(1)+'%':'—',
+      ];
+      if(!hideAccord) tVals2.push(totAcc2?fmt2(totAcc2):'—');
+      if(!hideFcst) tVals2.push('—','—','—','—','—',totFP2?fmt2(totFP2):'—',totFR2?fmt2(totFR2):'—');
+      var tx3=ML;
+      tVals2.forEach(function(v,ci){
+        var col=cols2[ci];
+        var talign2 = col.a==='right'?'right':'left';
+        var tx3b = col.a==='right'?tx3+col.w-2:tx3+2;
+        pdf2.text(v, tx3b, curY+8, {align:talign2, maxWidth:col.w-2});
+        tx3+=col.w;
+      });
+      curY+=15;
     });
-    // Ignora se já existe
-    if(bucketErr && !bucketErr.message.includes('already exists') && !bucketErr.message.includes('duplicate')) {
-      console.warn('createBucket:', bucketErr.message);
-    }
 
-    // Upload
-    const { error: upErr } = await _sb.storage.from('reports').upload(filename, file, {
-      contentType: 'application/pdf', upsert: true
-    });
+    var pdfBlob = pdf2.output('blob');
 
-    if(upErr) {
-      storageErrMsg = upErr.message;
-      console.error('Storage upload falhou:', upErr.message);
-      // Fallback: download local
-      const localUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = localUrl; a.download = filename; // .pdf
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a);
-      setTimeout(()=>URL.revokeObjectURL(localUrl), 5000);
+    // 3. Upload
+    setStatus('Enviando PDF para a nuvem…');
+    var filename2 = 'relatorio-'+yr.replace(/\s+/g,'-')+'-'+Date.now()+'.pdf';
+    var file2 = new File([pdfBlob], filename2, {type:'application/pdf'});
+    var reportUrl2 = null;
+    await _sb.storage.createBucket('reports',{public:true,fileSizeLimit:20971520}).catch(function(){});
+    var upResult = await _sb.storage.from('reports').upload(filename2, file2, {contentType:'application/pdf',upsert:true});
+    if(upResult.error) {
+      console.error('Storage upload error:', upResult.error.message);
+      var lu=URL.createObjectURL(pdfBlob);
+      var a2=document.createElement('a'); a2.href=lu; a2.download=filename2;
+      document.body.appendChild(a2); a2.click(); document.body.removeChild(a2);
+      setTimeout(function(){URL.revokeObjectURL(lu);},5000);
     } else {
-      const { data: urlData } = _sb.storage.from('reports').getPublicUrl(filename);
-      reportUrl = urlData?.publicUrl || null;
-      console.log('Storage upload OK, URL:', reportUrl);
+      var ud=_sb.storage.from('reports').getPublicUrl(filename2);
+      reportUrl2=ud.data&&ud.data.publicUrl?ud.data.publicUrl:null;
     }
 
-    // ── 5. Enviar email via EmailJS com link ──────────────────────────────────
+    // 4. Email
     setStatus('Enviando email…');
+    var linkHtml2 = reportUrl2
+      ? '<p style="margin:16px 0"><a href="'+reportUrl2+'" style="background:#3B5BDB;color:#fff;padding:11px 22px;border-radius:7px;text-decoration:none;font-weight:600;font-size:13px;display:inline-block">📄 Abrir Relatório PDF</a></p>'
+      : '<p style="font-size:12px;color:#6b7280">PDF baixado localmente (Storage indisponível).</p>';
+
+    var emailHtml2 = '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">'
+      +'<div style="background:#3B5BDB;padding:20px 24px;border-radius:8px 8px 0 0">'
+      +'<h2 style="color:#fff;margin:0;font-size:17px">Gerenciamento de Pagamentos D&amp;B</h2>'
+      +'<p style="color:rgba(255,255,255,.8);margin:4px 0 0;font-size:12px">'+yr+' &middot; '+now+'</p>'
+      +'</div>'
+      +'<div style="background:#fff;padding:20px 24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">'
+      +'<p style="color:#374151;margin:0 0 20px">'+bodyNote+'</p>'
+      +'<table style="width:100%;border-collapse:collapse;margin-bottom:20px"><tr>'
+      +'<td style="padding:14px 10px;background:#fef2f2;border-radius:7px;text-align:center;width:25%"><div style="font-size:10px;color:#9ca3af;margin-bottom:3px">TOTAL PAGO</div><div style="font-size:16px;font-weight:700;color:#dc2626">'+fmt2(totalPaid)+'</div></td>'
+      +'<td style="width:8px"></td>'
+      +'<td style="padding:14px 10px;background:#f0fdf4;border-radius:7px;text-align:center;width:25%"><div style="font-size:10px;color:#9ca3af;margin-bottom:3px">PENSÃO RECEBIDA</div><div style="font-size:16px;font-weight:700;color:#16a34a">'+fmt2(totalRec)+'</div></td>'
+      +'<td style="width:8px"></td>'
+      +'<td style="padding:14px 10px;background:#fff7ed;border-radius:7px;text-align:center;width:25%"><div style="font-size:10px;color:#9ca3af;margin-bottom:3px">DÉFICIT</div><div style="font-size:16px;font-weight:700;color:#ea580c">'+fmt2(deficit)+'</div></td>'
+      +'<td style="width:8px"></td>'
+      +'<td style="padding:14px 10px;background:#eff6ff;border-radius:7px;text-align:center;width:25%"><div style="font-size:10px;color:#9ca3af;margin-bottom:3px">COBERTURA PAI</div><div style="font-size:16px;font-weight:700;color:#2563eb">'+cobPai+'%</div></td>'
+      +'</tr></table>'
+      +linkHtml2
+      +'<p style="color:#9ca3af;font-size:11px;margin:16px 0 0;border-top:1px solid #f3f4f6;padding-top:12px">Enviado automaticamente &middot; App Gerenciamento de Pagamentos D&amp;B</p>'
+      +'</div></div>';
+
     emailjs.init(EMAILJS_PUBLIC_KEY);
-
-    const linkLine = storageErrMsg
-      ? `\n\n⚠️ Relatório baixado localmente (erro Storage: ${storageErrMsg})`
-      : '';
-
-    // ── Calcular resumo compacto para o email ────────────────────────────────
-    const txs = await dbAll('txs');
-    const txsAno = S.year === 'all' ? txs : txs.filter(t => String(t.academicYear) === String(S.year));
-    const totalRec = txsAno.filter(t=>t.type==='receita').reduce((s,t)=>s+t.amount,0);
-    const totalDesp = txsAno.filter(t=>t.type==='despesa').reduce((s,t)=>s+t.amount,0);
-    const fmt = v => 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-
-    const linkHtml = reportUrl
-      ? `<p style="margin:20px 0"><a href="${reportUrl}"
-           style="background:#3B5BDB;color:#fff;padding:12px 24px;border-radius:8px;
-                  text-decoration:none;font-weight:600;font-size:14px;display:inline-block">
-           📄 Abrir Relatório Completo
-         </a></p>`
-      : `<p style="color:#6b7280;font-size:12px">Relatório não disponível online desta vez.</p>`;
-
-    const emailHtml = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-  <div style="background:#3B5BDB;padding:20px 24px;border-radius:8px 8px 0 0">
-    <h2 style="color:#fff;margin:0;font-size:18px">Gerenciamento de Pagamentos D&amp;B</h2>
-    <p style="color:rgba(255,255,255,.8);margin:4px 0 0;font-size:12px">${yr} &middot; ${now}</p>
-  </div>
-  <div style="background:#fff;padding:20px 24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">
-    <p style="color:#374151;margin:0 0 16px">${bodyNote}</p>
-    <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
-      <tr>
-        <td style="padding:10px;background:#f0fdf4;border-radius:6px;text-align:center;width:50%">
-          <div style="font-size:11px;color:#6b7280;margin-bottom:2px">Total Receitas</div>
-          <div style="font-size:18px;font-weight:700;color:#16a34a">${fmt(totalRec)}</div>
-        </td>
-        <td style="width:12px"></td>
-        <td style="padding:10px;background:#fef2f2;border-radius:6px;text-align:center;width:50%">
-          <div style="font-size:11px;color:#6b7280;margin-bottom:2px">Total Despesas</div>
-          <div style="font-size:18px;font-weight:700;color:#dc2626">${fmt(totalDesp)}</div>
-        </td>
-      </tr>
-    </table>
-    <p style="padding:10px;background:#eff6ff;border-radius:6px;margin:0 0 16px;font-size:13px;color:#1d4ed8">
-      <strong>Saldo: ${fmt(totalRec - totalDesp)}</strong>
-    </p>
-    ${linkHtml}
-    <p style="color:#9ca3af;font-size:11px;margin:16px 0 0;border-top:1px solid #e5e7eb;padding-top:12px">
-      Enviado automaticamente &middot; App Gerenciamento de Pagamentos D&amp;B
-    </p>
-  </div>
-</div>`;
-
-    const result = await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
-      to_email:       to,
-      month_year:     yr,
-      report_content: emailHtml
+    var result2 = await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+      to_email: to, month_year: yr, report_content: emailHtml2
     });
+    if(result2.status !== 200) throw new Error('EmailJS status '+result2.status);
 
-    if(result.status !== 200) throw new Error('EmailJS status ' + result.status);
-
-    // ── 6. Sucesso ────────────────────────────────────────────────────────────
-    $('email-gen-status').style.display = 'none';
-    $('email-step-1').style.display = 'none';
-    $('email-step-2').style.display = 'block';
-    $('email-summary').innerHTML = reportUrl
-      ? `Email enviado para <b>${to}</b><br>✅ Link do relatório incluído no email.`
-      : `Email enviado para <b>${to}</b><br>⚠️ Storage: ${storageErrMsg||'sem link'} — relatório baixado localmente.`;
+    $('email-gen-status').style.display='none';
+    $('email-step-1').style.display='none';
+    $('email-step-2').style.display='block';
+    $('email-summary').innerHTML = reportUrl2
+      ? 'Email enviado para <b>'+to+'</b> com link do PDF.'
+      : 'Email enviado para <b>'+to+'</b>. PDF baixado localmente.';
     toast('✅ Email enviado!');
 
   } catch(e) {
-    console.error('Email error:', e);
-    $('email-gen-status').style.display = 'none';
-    btn.disabled = false;
-    toast('❌ ' + (e?.text || e?.message || String(e)), 8000);
+    console.error('[email] Error:', e);
+    showErr(e&&e.text ? e.text : e&&e.message ? e.message : String(e));
   }
 }
-
 function openMailtoLink(){ /* mantido para compatibilidade */ }
 
 async function printReport(){
