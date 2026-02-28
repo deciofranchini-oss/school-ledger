@@ -387,7 +387,7 @@ body{font-family:var(--f);font-size:16px;line-height:1.5;background:var(--bg);co
 
 <!-- ░░ LOCK SCREEN ░░ -->
 <!-- ░░ SUPABASE SETUP SCREEN ░░ -->
-<div id="sb-setup-screen" style="display:none;position:fixed;inset:0;z-index:999;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 20px;gap:18px;overflow-y:auto">
+<div id="sb-setup-screen" style="display:none;position:fixed;inset:0;z-index:999;background:var(--bg);flex-direction:column;align-items:center;justify-content:center;padding:32px 20px;gap:18px;overflow-y:auto">
   <div style="font-size:52px;line-height:1;margin-bottom:4px">🗄️</div>
   <div style="font-size:22px;font-weight:700;letter-spacing:-.03em;color:var(--t-1);text-align:center">Conectar ao Supabase</div>
   <div style="font-size:14px;color:var(--t-3);text-align:center;max-width:340px;line-height:1.7">
@@ -421,6 +421,27 @@ body{font-family:var(--f);font-size:16px;line-height:1.5;background:var(--bg);co
   </div>
 </div>
 
+<script>
+/* Lock screen functions — definidas antes do HTML para evitar ReferenceError */
+var _lockInput = '';
+var LOCK_PIN = '191291';
+function lockKey(d){ if(_lockInput.length>=6)return; _lockInput+=d; _updateDots(); if(_lockInput.length===6) setTimeout(_checkPin,80); }
+function lockDel(){ _lockInput=_lockInput.slice(0,-1); _updateDots(); }
+function lockClear(){ _lockInput=''; _updateDots(); var e=document.getElementById('lock-error'); if(e) e.style.display='none'; }
+function _updateDots(){ for(var i=0;i<6;i++){ var d=document.getElementById('ld-'+i); if(!d)return; d.classList.toggle('filled',i<_lockInput.length); d.classList.remove('error'); } }
+function _checkPin(){
+  if(_lockInput===LOCK_PIN){
+    sessionStorage.setItem('sl-auth','1');
+    var ls=document.getElementById('lock-screen');
+    ls.style.animation='lockUnlock .35s ease forwards';
+    setTimeout(function(){ ls.style.display='none'; if(typeof _loadAppData==='function') _loadAppData(); },340);
+  } else {
+    for(var i=0;i<6;i++){ var d=document.getElementById('ld-'+i); if(d) d.classList.add('error'); }
+    var e=document.getElementById('lock-error'); if(e) e.style.display='block';
+    setTimeout(function(){ _lockInput=''; _updateDots(); },800);
+  }
+}
+</script>
 <div id="lock-screen" style="
   position:fixed;inset:0;z-index:9999;
   background:linear-gradient(160deg,#1a1f3a 0%,#0f1220 60%,#1a1230 100%);
@@ -3255,8 +3276,7 @@ async function forceRefresh() {
 }
 
 /* ─── LOCK SCREEN ─── */
-const LOCK_PIN = '191291';
-let _lockInput = '';
+// LOCK_PIN and _lockInput declared in inline script above
 
 function lockKey(digit){
   if(_lockInput.length >= 6) return;
@@ -3274,13 +3294,7 @@ function lockClear(){
   updateLockDots();
   $('lock-error').style.display='none';
 }
-function updateLockDots(){
-  for(let i=0;i<6;i++){
-    const d=$('ld-'+i);
-    d.classList.toggle('filled', i < _lockInput.length);
-    d.classList.remove('error');
-  }
-}
+// function updateLockDots( moved to inline script
 function checkLockPin(){
   if(_lockInput === LOCK_PIN){
     sessionStorage.setItem('sl-auth','1');
