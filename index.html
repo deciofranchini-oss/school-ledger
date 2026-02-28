@@ -5,13 +5,14 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Ledger">
+<meta name="apple-mobile-web-app-title" content="Pag. D&B">
 <meta name="theme-color" content="#FAFAF9">
 <title>Gerenciamento de Pagamentos — Décio &amp; Bruna</title>
 <link rel="manifest" href="./manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
 /* ══════════════════════════════════════════════════════
    SCHOOL LEDGER v5 — Design System
@@ -379,6 +380,35 @@ body{font-family:var(--f);font-size:16px;line-height:1.5;background:var(--bg);co
 <body>
 
 <!-- ░░ LOCK SCREEN ░░ -->
+<!-- ░░ SUPABASE CONFIG SCREEN ░░ -->
+<div id="supabase-screen" style="position:fixed;inset:0;z-index:998;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 20px;gap:20px">
+  <div style="font-size:48px;line-height:1">🗄️</div>
+  <div style="font-size:22px;font-weight:700;letter-spacing:-.03em">Conectar ao Supabase</div>
+  <div style="font-size:14px;color:var(--t-3);text-align:center;max-width:340px;line-height:1.7">
+    Informe as credenciais do seu projeto.<br>Salvas apenas neste dispositivo (localStorage).
+  </div>
+  <div style="width:100%;max-width:380px;display:flex;flex-direction:column;gap:10px">
+    <div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--t-3);margin-bottom:5px">PROJECT URL</div>
+      <input id="sb-url-input" type="url" autocomplete="off" placeholder="https://xxxxxxxxxxxx.supabase.co"
+        style="width:100%;padding:11px 14px;border:1.5px solid var(--sep);border-radius:var(--r2);font:400 14px/1 var(--f);background:var(--card);color:var(--t-1);outline:none;transition:border-color .15s"
+        onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--sep)'">
+    </div>
+    <div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--t-3);margin-bottom:5px">ANON PUBLIC KEY</div>
+      <input id="sb-key-input" type="text" autocomplete="off" placeholder="eyJhbGciOiJIUzI1NiIs..."
+        style="width:100%;padding:11px 14px;border:1.5px solid var(--sep);border-radius:var(--r2);font:400 12px/1.3 var(--mono);background:var(--card);color:var(--t-1);outline:none;transition:border-color .15s"
+        onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--sep)'">
+    </div>
+    <div id="sb-conn-error" style="display:none;padding:10px 14px;background:var(--red-l);border-radius:var(--r);font-size:13px;color:var(--red);font-weight:500;line-height:1.5"></div>
+    <button onclick="connectSupabase()" id="sb-conn-btn" style="margin-top:4px;padding:14px;border:none;border-radius:var(--r2);background:var(--accent);color:#fff;font:600 15px/1 var(--f);cursor:pointer;transition:opacity .15s"
+      onmousedown="this.style.opacity='.75'" onmouseup="this.style.opacity='1'">Conectar →</button>
+  </div>
+  <div style="font-size:11px;color:var(--t-4);text-align:center;line-height:1.8">
+    Credenciais salvas no localStorage deste browser.<br>Nunca enviadas a terceiros.
+  </div>
+</div>
+
 <div id="lock-screen" style="
   position:fixed;inset:0;z-index:9999;
   background:linear-gradient(160deg,#1a1f3a 0%,#0f1220 60%,#1a1230 100%);
@@ -513,6 +543,7 @@ body{font-family:var(--f);font-size:16px;line-height:1.5;background:var(--bg);co
         <line x1="21" y1="12" x2="9" y2="12"/>
       </svg>
     </button>
+            <button class="btn" style="background:var(--fill);color:var(--t-2);border:1.5px solid var(--sep);margin-top:8px" onclick="disconnectSupabase()">🔌 Desconectar Supabase</button>
   </div>
 </div>
 
@@ -1058,32 +1089,155 @@ body{font-family:var(--f);font-size:16px;line-height:1.5;background:var(--bg);co
    IndexedDB v4: txs, cats, cfg, parties, ai_files
 ══════════════════════════════════════════════════════════ */
 
-/* ─── DB ─── */
-const DB_NAME = 'school-ledger-v5';
-let db;
+/* ─── SUPABASE ─── */
+let SB = null; // Supabase client (initialised in connectSupabase / boot)
 
-function openDB() {
-  return new Promise((res, rej) => {
-    const req = indexedDB.open(DB_NAME, 4);
-    req.onupgradeneeded = e => {
-      const d = e.target.result;
-      ['txs','cats','cfg','parties','ai_files'].forEach(s => {
-        if (!d.objectStoreNames.contains(s)) {
-          const opts = (s === 'cats' || s === 'cfg') ? { keyPath: s==='cfg'?'k':'key' } : { keyPath:'id', autoIncrement:true };
-          d.createObjectStore(s, opts);
-        }
-      });
-    };
-    req.onsuccess = e => { db = e.target.result; res(); };
-    req.onerror   = e => rej(e.target.error);
-  });
+// Mapeamento de colunas: JS camelCase ↔ Supabase snake_case
+function txToRow(tx) {
+  return {
+    id:             tx.id || undefined,
+    amount:         tx.amount,
+    type:           tx.type,
+    category_key:   tx.categoryKey,
+    party_id:       tx.partyId || null,
+    party_legacy:   tx.party   || null,
+    date:           tx.date,
+    academic_year:  tx.academicYear,
+    academic_month: tx.academicMonth,
+    is_late:        tx.isLate || false,
+    student:        tx.student || 'Ambas',
+    notes:          tx.notes  || null,
+    tags:           tx.tags   || null,
+    file_name:      tx.fileName || null,
+    file_type:      tx.fileType || null,
+    file_data:      tx.fileData || null,
+  };
+}
+function rowToTx(r) {
+  return {
+    id:            r.id,
+    amount:        parseFloat(r.amount),
+    type:          r.type,
+    categoryKey:   r.category_key,
+    partyId:       r.party_id,
+    party:         r.party_legacy,
+    date:          r.date,
+    academicYear:  r.academic_year,
+    academicMonth: r.academic_month,
+    isLate:        r.is_late,
+    student:       r.student,
+    notes:         r.notes,
+    tags:          r.tags,
+    fileName:      r.file_name,
+    fileType:      r.file_type,
+    fileData:      r.file_data,
+    createdAt:     r.created_at,
+    updatedAt:     r.updated_at,
+  };
+}
+function rowToParty(r) {
+  return { id: r.id, name: r.name, emoji: r.emoji };
+}
+function rowToCat(r) {
+  return { key: r.key, label: r.label, color: r.color, system: r.is_system };
 }
 
-const dbAll   = s     => new Promise((res,rej) => { const r=db.transaction(s,'readonly').objectStore(s).getAll(); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); });
-const dbGet   = (s,k) => new Promise((res,rej) => { const r=db.transaction(s,'readonly').objectStore(s).get(k); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); });
-const dbPut   = (s,v) => new Promise((res,rej) => { const r=db.transaction(s,'readwrite').objectStore(s).put(v); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); });
-const dbDel   = (s,k) => new Promise((res,rej) => { const r=db.transaction(s,'readwrite').objectStore(s).delete(k); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); });
-const dbClear = s     => new Promise((res,rej) => { const r=db.transaction(s,'readwrite').objectStore(s).clear(); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); });
+// ─── DB Abstraction (todas as funções do app chamam estas) ─────────────────
+async function dbAll(store) {
+  if (store === 'txs')     { const {data,error}=await SB.from('transactions').select('*').order('date',{ascending:false}); if(error) throw error; return data.map(rowToTx); }
+  if (store === 'cats')    { const {data,error}=await SB.from('categories').select('*').order('key'); if(error) throw error; return data.map(rowToCat); }
+  if (store === 'parties') { const {data,error}=await SB.from('parties').select('*').order('name'); if(error) throw error; return data.map(rowToParty); }
+  if (store === 'cfg')     { const {data,error}=await SB.from('config').select('*'); if(error) throw error; return data.map(r=>({k:r.k,...r.value})); }
+  if (store === 'ai_files'){ return localFileAll(); } // arquivos no IndexedDB local
+  return [];
+}
+async function dbGet(store, key) {
+  if (store === 'cfg') { const {data,error}=await SB.from('config').select('*').eq('k',key).maybeSingle(); if(error) throw error; return data?{k:data.k,...data.value}:null; }
+  if (store === 'txs') { const {data,error}=await SB.from('transactions').select('*').eq('id',key).maybeSingle(); if(error) throw error; return data?rowToTx(data):null; }
+  if (store === 'parties') { const {data,error}=await SB.from('parties').select('*').eq('id',key).maybeSingle(); if(error) throw error; return data?rowToParty(data):null; }
+  return null;
+}
+async function dbPut(store, val) {
+  if (store === 'txs') {
+    const row = txToRow(val);
+    if (row.id) { const {data,error}=await SB.from('transactions').upsert(row).select('id').single(); if(error) throw error; return data.id; }
+    else { delete row.id; const {data,error}=await SB.from('transactions').insert(row).select('id').single(); if(error) throw error; return data.id; }
+  }
+  if (store === 'cats') {
+    const {error}=await SB.from('categories').upsert({key:val.key,label:val.label,color:val.color,is_system:val.system||false}); if(error) throw error; return val.key;
+  }
+  if (store === 'parties') {
+    if (val.id) { const {data,error}=await SB.from('parties').upsert({id:val.id,name:val.name,emoji:val.emoji||'👤'}).select('id').single(); if(error) throw error; return data.id; }
+    else { const {data,error}=await SB.from('parties').insert({name:val.name,emoji:val.emoji||'👤'}).select('id').single(); if(error) throw error; return data.id; }
+  }
+  if (store === 'cfg') {
+    const {k, ...rest} = val;
+    const {error}=await SB.from('config').upsert({k, value:rest}); if(error) throw error; return k;
+  }
+  if (store === 'ai_files') { return localFilePut(val); }
+}
+async function dbDel(store, key) {
+  if (store === 'ai_files') { return localFileDel(key); }
+  const tbl = {txs:'transactions',cats:'categories',parties:'parties'}[store];
+  if (!tbl) return;
+  const col = store==='cats' ? 'key' : 'id';
+  const {error}=await SB.from(tbl).delete().eq(col,key); if(error) throw error;
+}
+async function dbClear(store) {
+  // Usado pelo clearAll — apaga tudo da tabela
+  const tbl = {txs:'transactions',cats:'categories',parties:'parties',cfg:'config',ai_files:null}[store];
+  if (!tbl) return;
+  const {error}=await SB.from(tbl).delete().neq('id',0).catch(()=>({error:null})); // neq id=0 = todos
+  if(error) {
+    // fallback para tabelas com PK não-integer (categories, config)
+    const {error:e2}=await SB.from(tbl).delete().neq('key','__never__');
+    if(e2) console.error('dbClear',store,e2);
+  }
+}
+
+/* ─── SUPABASE CONNECT ──────────────────────────────────────────────────── */
+async function connectSupabase() {
+  const url = $('sb-url-input').value.trim().replace(/\/+$/, '');
+  const key = $('sb-key-input').value.trim();
+  const err = $('sb-conn-error');
+  const btn = $('sb-conn-btn');
+  err.style.display='none';
+  if (!url || !url.startsWith('https://')) { err.textContent='URL inválida. Deve começar com https://'; err.style.display='block'; return; }
+  if (!key || key.length < 100)            { err.textContent='Anon key inválida ou muito curta.'; err.style.display='block'; return; }
+  btn.textContent='Conectando…'; btn.disabled=true;
+  try {
+    SB = supabase.createClient(url, key);
+    // Test connection
+    const {error} = await SB.from('categories').select('key').limit(1);
+    if (error) throw new Error(error.message);
+    localStorage.setItem('sb-url', url);
+    localStorage.setItem('sb-key', key);
+    $('supabase-screen').style.display='none';
+    await bootApp();
+  } catch(e) {
+    err.textContent = '❌ Falha: ' + (e.message||e) + '. Verifique URL e key.';
+    err.style.display='block';
+    btn.textContent='Conectar →'; btn.disabled=false;
+    SB = null;
+  }
+}
+
+
+/* ─── LOCAL FILE CACHE (base64 anexos — IndexedDB local, não vai ao Supabase) ─── */
+const LOCAL_DB_NAME = 'pdb-files';
+let _localDb;
+function openLocalDB() {
+  return new Promise((res,rej)=>{
+    const r = indexedDB.open(LOCAL_DB_NAME, 1);
+    r.onupgradeneeded = e => e.target.result.createObjectStore('files',{keyPath:'id',autoIncrement:true});
+    r.onsuccess = e => { _localDb=e.target.result; res(); };
+    r.onerror   = e => rej(e.target.error);
+  });
+}
+function localFilePut(v)  { return new Promise((res,rej)=>{ const r=_localDb.transaction('files','readwrite').objectStore('files').put(v); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+function localFileGet(id) { return new Promise((res,rej)=>{ const r=_localDb.transaction('files','readonly').objectStore('files').get(id); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+function localFileDel(id) { return new Promise((res,rej)=>{ const r=_localDb.transaction('files','readwrite').objectStore('files').delete(id); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); }); }
+function localFileAll()   { return new Promise((res,rej)=>{ const r=_localDb.transaction('files','readonly').objectStore('files').getAll(); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
 
 /* ─── STATE ─── */
 const S = { year: new Date().getFullYear(), tab:'dash', cats:[], parties:[], editId:null, genBase:'last', accord:{type:'pct',pct:50,val:0}, fcstVisible:true, hiddenCats:new Set(), hiddenFcstCats:new Set(), hiddenFunding:new Set(), _pendingFileId:null, _existingFileId:null, _removeFile:false, _convFileId:null };
@@ -2603,8 +2757,17 @@ async function saveCatColor(key, color){
 }
 
 async function clearAll(){
-  if(!confirm('Apagar TODOS os dados? Não pode ser desfeito.'))return;
-  await dbClear('txs'); await initYearFilter(); renderCfg(); toast('🗑 Dados removidos');
+  if(!confirm('⚠️ Apagar TODOS os dados do Supabase? Esta ação é irreversível.')) return;
+  try{
+    await SB.from('transactions').delete().gte('id',0);
+    await SB.from('parties').delete().gte('id',0);
+    await SB.from('config').delete().neq('k','');
+    await SB.from('categories').delete().neq('key','');
+    toast('🗑 Todos os dados apagados');
+    S.cats=[]; S.parties=[];
+    await initYearFilter();
+    renderDash();
+  }catch(e){ toast('❌ Erro: '+e.message); }
 }
 
 /* ─── JSON EXPORT / IMPORT ─── */
@@ -2648,7 +2811,7 @@ async function importJSON(file){
 
 /* ─── SEED DATA ─────────────────────────────────────────────── */
 async function seedIfEmpty(){
-  const existing=await dbAll('txs'); if(existing.length>0) return;
+  const existing=await dbAll('txs'); if(existing.length>0) return; // já tem dados no Supabase
 
   const CATS=[
     {key:'mensalidade',label:'Mensalidade',color:'#3B5BDB',system:true},
@@ -2792,13 +2955,13 @@ function checkLockPin(){
 if('serviceWorker'in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
 
 /* ─── BOOT ─── */
-async function boot(){
-  // Auth gate — show lock screen if not authenticated this session
+/* ─── BOOT ─── */
+async function bootApp(){
+  // Auth gate
   if(sessionStorage.getItem('sl-auth')==='1'){
     $('lock-screen').style.display='none';
   }
-  // App init (runs behind lock screen, ready when unlocked)
-  await openDB();
+  await openLocalDB();
   await seedIfEmpty();
   await migratePartyMe();
   await loadAccordConfig();
@@ -2806,6 +2969,26 @@ async function boot(){
   await loadParties();
   await initYearFilter();
   renderDash();
+}
+
+async function boot(){
+  const url = localStorage.getItem('sb-url');
+  const key = localStorage.getItem('sb-key');
+  if(url && key){
+    try{
+      SB = supabase.createClient(url, key);
+      const {error} = await SB.from('categories').select('key').limit(1);
+      if(error) throw error;
+      $('supabase-screen').style.display='none';
+      await bootApp();
+    }catch(e){
+      console.warn('Supabase credentials failed:', e.message);
+      SB = null;
+      localStorage.removeItem('sb-url');
+      localStorage.removeItem('sb-key');
+    }
+  }
+  // If SB still null → supabase-screen stays visible
 }
 window.addEventListener('load',boot);
 </script>
