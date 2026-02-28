@@ -656,7 +656,7 @@ body{font-family:var(--f);font-size:16px;line-height:1.5;background:var(--bg);co
         <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--bg-2);border-radius:var(--r);border:1px solid var(--sep-l)">
           <span id="efb-ic" style="font-size:18px">📎</span>
           <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:var(--t-2)" id="efb-name">—</div><div style="font-size:10px;color:var(--t-3)" id="efb-meta"></div></div>
-          <button onclick="downloadTxFile(S._existingFileId)" style="border:none;background:var(--accent);color:#fff;border-radius:var(--r);padding:5px 10px;font:500 11px/1 var(--f);cursor:pointer;flex-shrink:0">⬇ Ver</button>
+          <button onclick="downloadTxFile(S._existingFilePath)" style="border:none;background:var(--accent);color:#fff;border-radius:var(--r);padding:5px 10px;font:500 11px/1 var(--f);cursor:pointer;flex-shrink:0">⬇ Ver</button>
           <button onclick="removeExistingFile()" style="border:none;background:var(--fill);color:var(--red);border-radius:var(--r);padding:5px 10px;font:500 11px/1 var(--f);cursor:pointer;flex-shrink:0">✕</button>
         </div>
       </div>
@@ -1119,7 +1119,7 @@ function _txToRow(tx) {
     student:        tx.student   || 'Ambas',
     notes:          tx.notes     || null,
     tags:           tx.tags      || null,
-    file_id:        tx.fileId    || null,
+    file_path:      tx.filePath  || null,   // Supabase Storage path
   };
   if (tx.id) r.id = tx.id;
   return r;
@@ -1140,7 +1140,7 @@ function _rowToTx(r) {
     student:       r.student,
     notes:         r.notes,
     tags:          r.tags,
-    fileId:        r.file_id   || null,
+    filePath:      r.file_path || null,    // Supabase Storage path
     createdAt:     r.created_at,
     updatedAt:     r.updated_at,
   };
@@ -1204,7 +1204,7 @@ async function dbPut(store, val) {
     if (row.id) {
       // UPDATE
       // Remove quaisquer campos que não existem na tabela (proteção extra)
-      const VALID_COLS = ['id','amount','type','category_key','party_id','party_legacy','date','academic_year','academic_month','is_late','student','notes','tags','file_id'];
+      const VALID_COLS = ['id','amount','type','category_key','party_id','party_legacy','date','academic_year','academic_month','is_late','student','notes','tags','file_path'];
       Object.keys(row).forEach(k => { if(!VALID_COLS.includes(k)) delete row[k]; });
       console.log('dbPut UPDATE row:', JSON.stringify(row));
       const { data, error } = await _sb.from('transactions').update(row).eq('id', row.id).select('id').single();
@@ -1213,7 +1213,7 @@ async function dbPut(store, val) {
     } else {
       // INSERT
       // Remove quaisquer campos que não existem na tabela (proteção extra)
-      const VALID_COLS = ['id','amount','type','category_key','party_id','party_legacy','date','academic_year','academic_month','is_late','student','notes','tags','file_id'];
+      const VALID_COLS = ['id','amount','type','category_key','party_id','party_legacy','date','academic_year','academic_month','is_late','student','notes','tags','file_path'];
       Object.keys(row).forEach(k => { if(!VALID_COLS.includes(k)) delete row[k]; });
       console.log('dbPut INSERT row:', JSON.stringify(row));
       const { data, error } = await _sb.from('transactions').insert(row).select('id').single();
@@ -1273,20 +1273,58 @@ async function dbClear(store) {
 }
 
 // ── IndexedDB LOCAL — apenas para arquivos anexados ────────────────────────
-const _IDB_NAME = 'pdb-local-files';
-let _idb = null;
-function _openIDB() {
+/* ─── SUPABASE STORAGE — arquivos anexados ficam na nuvem ─────────────────
+   Bucket: "attachments" (criado no Supabase Storage)
+   Path:   attachments/tx-{txId}-{timestamp}.{ext}
+   A tabela transactions guarda file_path (text) em vez de file_id (integer)
+─────────────────────────────────────────────────────────────────────────── */
+const _BUCKET = 'attachments';
+
+async function _openIDB() { /* Supabase Storage — sem IndexedDB necessário */ }
+
+// Upload: recebe File object, devolve { path, name, size, type, ext }
+async function _storageUpload(file, txId) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const path = `tx-${txId||'new'}-${Date.now()}.${ext}`;
+  const { error } = await _sb.storage.from(_BUCKET).upload(path, file, {
+    contentType: file.type,
+    upsert: true
+  });
+  if (error) throw new Error('Upload falhou: ' + error.message);
+  return { path, name: file.name, size: file.size, type: file.type, ext };
+}
+
+// Download: devolve URL pública assinada (1 hora)
+async function _storageGetUrl(path) {
+  const { data, error } = await _sb.storage.from(_BUCKET).createSignedUrl(path, 3600);
+  if (error) throw new Error('URL falhou: ' + error.message);
+  return data.signedUrl;
+}
+
+// Download como base64 (para preview inline)
+async function _storageDownload(path) {
+  const { data, error } = await _sb.storage.from(_BUCKET).download(path);
+  if (error) throw new Error('Download falhou: ' + error.message);
   return new Promise((res, rej) => {
-    const r = indexedDB.open(_IDB_NAME, 1);
-    r.onupgradeneeded = e => e.target.result.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
-    r.onsuccess = e => { _idb = e.target.result; res(); };
-    r.onerror   = e => rej(e.target.error);
+    const reader = new FileReader();
+    reader.onload = e => res(e.target.result); // base64 dataURL
+    reader.onerror = rej;
+    reader.readAsDataURL(data);
   });
 }
-function _idbAll()   { return new Promise((res,rej)=>{ const r=_idb.transaction('files','readonly').objectStore('files').getAll(); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
-function _idbPut(v)  { return new Promise((res,rej)=>{ const r=_idb.transaction('files','readwrite').objectStore('files').put(v);  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
-function _idbGet(k)  { return new Promise((res,rej)=>{ const r=_idb.transaction('files','readonly').objectStore('files').get(k);   r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
-function _idbDel(k)  { return new Promise((res,rej)=>{ const r=_idb.transaction('files','readwrite').objectStore('files').delete(k);r.onsuccess=()=>res();         r.onerror=()=>rej(r.error); }); }
+
+// Delete
+async function _storageDelete(path) {
+  const { error } = await _sb.storage.from(_BUCKET).remove([path]);
+  if (error) console.warn('Storage delete falhou:', error.message);
+}
+
+// Compatibilidade: dbAll/dbGet/dbPut/dbDel para 'ai_files' agora são no-ops
+// (o caminho do arquivo fica em transactions.file_path diretamente)
+function _idbAll()  { return Promise.resolve([]); }
+function _idbGet(k) { return Promise.resolve(null); }
+function _idbPut(v) { return Promise.resolve(null); }
+function _idbDel(k) { return Promise.resolve(); }
 
 // ── Supabase setup / connect / disconnect ──────────────────────────────────
 async function sbConnect() {
@@ -1337,7 +1375,7 @@ function sbDisconnect() {
 }
 
 /* ─── STATE ─── */
-const S = { year: new Date().getFullYear(), tab:'dash', cats:[], parties:[], editId:null, genBase:'last', accord:{type:'pct',pct:50,val:0}, fcstVisible:true, hiddenCats:new Set(), hiddenFcstCats:new Set(), hiddenFunding:new Set(), _pendingFileId:null, _existingFileId:null, _removeFile:false, _convFileId:null };
+const S = { year: new Date().getFullYear(), tab:'dash', cats:[], parties:[], editId:null, genBase:'last', accord:{type:'pct',pct:50,val:0}, fcstVisible:true, hiddenCats:new Set(), hiddenFcstCats:new Set(), hiddenFunding:new Set(), _pendingFile:null, _existingFilePath:null, _removeFile:false, _convFile:null };
 const MO = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 const MF = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const CAT_PAID  = ['mensalidade','matricula','material','uniforme','extra'];
@@ -1771,7 +1809,7 @@ function txHTML(r){
   const pLabel=partyLabel(r);
   const isOverdue=isFcst&&r.date<=TODAY;
   const student=r.student&&r.student!=='Ambas'?`<span class="student-badge">${r.student}</span>`:'';
-  const hasDoc=r.fileId?`<span title="Documento anexado" style="font-size:12px;color:var(--accent);margin-left:4px">📎</span>`:'';
+  const hasDoc=r.filePath?`<span title="Documento anexado" style="font-size:12px;color:var(--accent);margin-left:4px">📎</span>`:'';
   return `<div class="list-row${isFcst?' row-fcst':''}" onclick="openTxSheet(${r.id})">
     <div class="list-icon" style="background:${isFcst?'var(--violet-l)':ci.color+'1A'}">${isFcst?'◆':catEmoji(r.categoryKey)}</div>
     <div class="list-body">
@@ -1840,7 +1878,7 @@ async function openTxSheet(id){
   const isFcst=r.type==='FORECAST', out=r.type==='PAID';
   const pLabel=partyLabel(r);
   const isOverdue=isFcst&&r.date<=TODAY;
-  $('sh-title').textContent=ci.label+(isFcst?' ◆':'')+(r.fileId?' 📎':'');
+  $('sh-title').textContent=ci.label+(isFcst?' ◆':'')+(r.filePath?' 📎':'');
   const shRow=(l,v)=>`<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:12px 20px;border-bottom:.5px solid var(--sep-l)"><span style="font-size:14px;color:var(--t-3)">${l}</span><span style="font-size:14px;font-weight:500;text-align:right;max-width:60%">${v}</span></div>`;
 
   // Build document section HTML — filled in async below
@@ -1861,14 +1899,14 @@ async function openTxSheet(id){
       ${r.student?shRow('Aluna',r.student):''}
       ${r.notes?shRow('Notas',r.notes):''}
     </div>
-    ${r.fileId ? `<div id="${docSectionId}" style="margin:12px 20px 0;border-radius:var(--r2);border:1.5px solid var(--sep-l);overflow:hidden;background:var(--card)">
+    ${r.filePath ? `<div id="${docSectionId}" style="margin:12px 20px 0;border-radius:var(--r2);border:1.5px solid var(--sep-l);overflow:hidden;background:var(--card)">
       <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--bg-2);border-bottom:1px solid var(--sep-l)">
         <span id="${docSectionId}-ic" style="font-size:20px">📎</span>
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:600;color:var(--t-2)" id="${docSectionId}-name">Carregando…</div>
           <div style="font-size:11px;color:var(--t-3);margin-top:1px" id="${docSectionId}-meta"></div>
         </div>
-        <button id="${docSectionId}-dl" onclick="downloadTxFile(${r.fileId})" class="pill-btn blue" style="padding:7px 12px;font-size:12px">⬇ Baixar</button>
+        <button id="${docSectionId}-dl" onclick="downloadTxFile('${r.filePath}')" class="pill-btn blue" style="padding:7px 12px;font-size:12px">⬇ Baixar</button>
       </div>
       <div id="${docSectionId}-preview" style="max-height:320px;overflow-y:auto"></div>
     </div>` : ''}
@@ -1881,40 +1919,44 @@ async function openTxSheet(id){
 
   $('tx-sheet').classList.add('open');
 
-  // Async: load and render attached document
-  if(r.fileId){
+  // Async: load and render attached document from Supabase Storage
+  if(r.filePath){
     try{
-      const f = await dbGet('ai_files', Number(r.fileId));
-      if(f){
-        const icMap={pdf:'📄',jpg:'🖼️',jpeg:'🖼️',png:'🖼️',txt:'📝'};
-        const ic=$(docSectionId+'-ic'); if(ic) ic.textContent=icMap[f.ext]||'📎';
-        const nm=$(docSectionId+'-name'); if(nm) nm.textContent=f.name;
-        const mt=$(docSectionId+'-meta'); if(mt) mt.textContent=(f.size/1024).toFixed(1)+' KB · '+new Date(f.storedAt).toLocaleDateString('pt-BR');
-        const pv=$(docSectionId+'-preview');
-        if(pv){
-          if(f.ext==='pdf'){
-            pv.innerHTML=`<embed src="${f.data}" type="application/pdf" style="width:100%;height:300px;border:none">`;
-          } else if(['jpg','jpeg','png'].includes(f.ext)){
-            pv.innerHTML=`<img src="${f.data}" style="width:100%;max-height:300px;object-fit:contain;display:block;padding:8px">`;
-          } else if(f.ext==='txt'){
-            // Show plain text content
-            const raw=atob(f.data.split(',')[1]||'');
-            pv.innerHTML=`<pre style="font:400 11px/1.6 var(--mono);padding:12px;white-space:pre-wrap;word-break:break-word;color:var(--t-2);max-height:260px;overflow-y:auto">${raw.replace(/</g,'&lt;').substring(0,3000)}${raw.length>3000?'\n…':''}</pre>`;
-          }
+      const ext = r.filePath.split('.').pop().toLowerCase();
+      const icMap={pdf:'📄',jpg:'🖼️',jpeg:'🖼️',png:'🖼️',txt:'📝'};
+      const ic=$(docSectionId+'-ic'); if(ic) ic.textContent=icMap[ext]||'📎';
+      const nm=$(docSectionId+'-name'); if(nm) nm.textContent=r.filePath.split('/').pop();
+      const mt=$(docSectionId+'-meta'); if(mt) mt.textContent='Carregando…';
+      const pv=$(docSectionId+'-preview');
+      // Download from Supabase Storage
+      const dataUrl = await _storageDownload(r.filePath);
+      if(mt) mt.textContent=ext.toUpperCase()+' · via Supabase Storage';
+      if(pv){
+        if(ext==='pdf'){
+          pv.innerHTML=`<embed src="${dataUrl}" type="application/pdf" style="width:100%;height:300px;border:none">`;
+        } else if(['jpg','jpeg','png'].includes(ext)){
+          pv.innerHTML=`<img src="${dataUrl}" style="width:100%;max-height:300px;object-fit:contain;display:block;padding:8px">`;
+        } else if(ext==='txt'){
+          const raw=atob(dataUrl.split(',')[1]||'');
+          pv.innerHTML=`<pre style="font:400 11px/1.6 var(--mono);padding:12px;white-space:pre-wrap;word-break:break-word;color:var(--t-2);max-height:260px;overflow-y:auto">${raw.replace(/</g,'&lt;').substring(0,3000)}${raw.length>3000?'\n…':''}</pre>`;
         }
       }
     }catch(e){ console.warn('Doc load error:',e); }
   }
 }
 
-async function downloadTxFile(fileId){
+async function downloadTxFile(filePath){
+  if(!filePath){ toast('❌ Arquivo não encontrado'); return; }
   try{
-    const f=await dbGet('ai_files', Number(fileId)); if(!f)return;
+    toast('⬇ Baixando…');
+    const dataUrl = await _storageDownload(filePath);
+    const ext = filePath.split('.').pop().toLowerCase();
+    const name = filePath.split('/').pop();
     const a=document.createElement('a');
-    a.href=f.data; a.download=f.name;
+    a.href=dataUrl; a.download=name;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    toast('⬇ Download iniciado');
-  }catch(e){ toast('❌ Erro ao baixar arquivo'); }
+    toast('✅ Download concluído');
+  }catch(e){ toast('❌ Erro ao baixar: '+e.message); }
 }
 
 /* ─── DOC UPLOAD (sem IA — só armazenamento) ─── */
@@ -1938,26 +1980,19 @@ async function loadDocFile(f){
   $('doc-file-ic').textContent=icMap[ext]||'📎';
   $('doc-file-nm').textContent=f.name;
   $('doc-file-sz').textContent=(f.size/1024).toFixed(1)+' KB';
-  // Store in ai_files and capture id
-  try{
-    const reader=new FileReader();
-    reader.onload=async ev=>{
-      const newId=await dbPut('ai_files',{name:f.name,size:f.size,type:f.type,ext,data:ev.target.result,storedAt:new Date().toISOString()});
-      S._pendingFileId=newId;
-      toast('📎 Arquivo pronto para salvar com a transação');
-    };
-    reader.readAsDataURL(f);
-  }catch(e){ toast('❌ Erro ao ler arquivo'); }
+  // Guardar referência ao File — será uploadado ao salvar a transação
+  S._pendingFile = f;
+  toast('📎 Arquivo pronto — será enviado ao salvar');
 }
 
 function clearDocFile(e){
   e.stopPropagation();
-  S._pendingFileId=null;
+  S._pendingFile=null;
   resetDocUpload();
 }
 
 function removeExistingFile(){
-  S._existingFileId=null;
+  S._existingFilePath=null;
   S._removeFile=true; // flag to clear fileId on save
   const banner=$('existing-file-banner'); if(banner) banner.style.display='none';
   toast('📎 Documento removido — salve para confirmar');
@@ -2000,7 +2035,7 @@ async function openConvertSheet(id){
   const ci=catInfo(r.categoryKey);
   $('conv-fcst-info').innerHTML=`◆ <b>${ci.label}</b> · ${MF[r.academicMonth-1]}/${r.academicYear} · Prev. ≈${brl(r.amount)}`;
   // Reset file upload
-  S._convFileId=null;
+  S._convFile=null;
   $('conv-file-input').value='';
   $('conv-doc-idle').style.display='block';
   $('conv-file-info').style.display='none';
@@ -2021,9 +2056,15 @@ async function confirmConvert(){
     notes:$('conv-notes').value||r.notes,
     updatedAt:new Date().toISOString()
   };
-  if(S._convFileId) updated.fileId=S._convFileId;
+  // Upload file to Supabase Storage if one was selected
+  if(S._convFile){
+    try{
+      const meta = await _storageUpload(S._convFile, r.id);
+      updated.filePath = meta.path;
+    }catch(e){ toast('⚠️ Arquivo não enviado: '+e.message); }
+    S._convFile = null;
+  }
   await dbPut('txs',updated);
-  S._convFileId=null;
   closeSheet('convert-sheet');
   toast('✅ Convertida em pagamento!');
   await initYearFilter();
@@ -2044,19 +2085,14 @@ async function loadConvFile(f){
   $('conv-file-ic').textContent=icMap[ext]||'📎';
   $('conv-file-nm').textContent=f.name;
   $('conv-file-sz').textContent=(f.size/1024).toFixed(1)+' KB';
-  try{
-    const reader=new FileReader();
-    reader.onload=async ev=>{
-      const newId=await dbPut('ai_files',{name:f.name,size:f.size,type:f.type,ext,data:ev.target.result,storedAt:new Date().toISOString()});
-      S._convFileId=newId;
-    };
-    reader.readAsDataURL(f);
-  }catch(e){ toast('❌ Erro ao ler arquivo'); }
+  // Guardar referência — será uploadado ao confirmar conversão
+  S._convFile = f;
+  toast('📎 Arquivo pronto — será enviado ao confirmar');
 }
 
 function clearConvFile(e){
   e.stopPropagation();
-  S._convFileId=null;
+  S._convFile=null;
   $('conv-file-input').value='';
   $('conv-doc-idle').style.display='block';
   $('conv-file-info').style.display='none';
@@ -2094,8 +2130,8 @@ function onDateChange(){
 
 async function resetForm(){
   S.editId=null;
-  S._pendingFileId=null;
-  S._existingFileId=null;
+  S._pendingFile=null;
+  S._existingFilePath=null;
   S._removeFile=false;
   // Clear doc upload UI
   resetDocUpload();
@@ -2158,19 +2194,15 @@ async function editTx(id){
   $('future-date-notice').style.display='none';
 
   // Show existing file banner if tx has attached document
-  S._existingFileId = r.fileId || null;
+  S._existingFilePath = r.filePath || null;
   const banner = $('existing-file-banner');
-  if(r.fileId && banner){
+  if(r.filePath && banner){
     banner.style.display='block';
-    try{
-      const f = await dbGet('ai_files', Number(r.fileId));
-      if(f){
-        const icMap={pdf:'📄',jpg:'🖼️',jpeg:'🖼️',png:'🖼️',txt:'📝'};
-        $('efb-ic').textContent = icMap[f.ext]||'📎';
-        $('efb-name').textContent = f.name;
-        $('efb-meta').textContent = (f.size/1024).toFixed(1)+' KB · '+new Date(f.storedAt).toLocaleDateString('pt-BR');
-      }
-    }catch(e){}
+    const ext = r.filePath.split('.').pop().toLowerCase();
+    const icMap={pdf:'📄',jpg:'🖼️',jpeg:'🖼️',png:'🖼️',txt:'📝'};
+    if($('efb-ic'))   $('efb-ic').textContent   = icMap[ext]||'📎';
+    if($('efb-name')) $('efb-name').textContent = r.filePath.split('/').pop();
+    if($('efb-meta')) $('efb-meta').textContent = ext.toUpperCase()+' · Supabase Storage';
   } else if(banner){
     banner.style.display='none';
   }
@@ -2212,20 +2244,29 @@ async function saveTx(){
       tags:($('f-tags')&&$('f-tags').value)||null,
     };
 
-    // File handling
-    if(S._pendingFileId){
-      tx.fileId=S._pendingFileId;
+    // File handling — Supabase Storage
+    if(S._pendingFile){
+      // Upload pending file to Supabase Storage
+      const meta = await _storageUpload(S._pendingFile, S.editId||'new');
+      tx.filePath = meta.path;
+      tx.fileName = meta.name;
+      // Delete old file if replacing
+      if(S._existingFilePath) await _storageDelete(S._existingFilePath);
     } else if(S.editId && !S._removeFile){
-      const existing=await dbAll('txs');
-      const orig=existing.find(x=>x.id===S.editId);
-      if(orig?.fileId) tx.fileId=orig.fileId;
+      // Preserve existing filePath when editing without changing file
+      const existing = await dbAll('txs');
+      const orig = existing.find(x => x.id === S.editId);
+      if(orig?.filePath) tx.filePath = orig.filePath;
+    } else if(S._removeFile && S._existingFilePath){
+      await _storageDelete(S._existingFilePath);
+      tx.filePath = null;
     }
 
     if(S.editId) tx.id=S.editId;
 
     console.log('saveTx → inserting:', JSON.stringify(_txToRow(tx)));
     await dbPut('txs',tx);
-    S._pendingFileId=null; S._removeFile=false;
+    S._pendingFile=null; S._removeFile=false;
     toast(S.editId?'✅ Atualizado!':'✅ Salvo!');
     S.editId=null;
     await initYearFilter();
@@ -3133,10 +3174,10 @@ async function boot() {
   if (url && key) {
     try {
       _sb = supabase.createClient(url, key, {
-      auth: { persistSession: false, autoRefreshToken: false },
-      realtime: { params: { eventsPerSecond: -1 } },
-      global: { fetch: (...args) => fetch(...args) }
-    });
+        auth: { persistSession: false, autoRefreshToken: false },
+        realtime: { params: { eventsPerSecond: -1 } },
+        global: { fetch: (...args) => fetch(...args) }
+      });
       const { error } = await _sb.from('categories').select('key').limit(1);
       if (error) throw error;
       // Força reload do schema cache do PostgREST (evita erro file_data stale)
