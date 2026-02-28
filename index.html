@@ -1380,7 +1380,12 @@ async function sbConnect() {
     _sb = supabase.createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
       realtime: { params: { eventsPerSecond: -1 } },
-      global: { fetch: (...args) => fetch(...args) }
+      global: { fetch: (input, init) => {
+        if (init?.headers instanceof Headers) {
+          init = { ...init, headers: Object.fromEntries(init.headers.entries()) };
+        }
+        return fetch(input, init);
+      }}
     });
     // Test connection with a lightweight query
     const { error } = await _sb.from('categories').select('key').limit(1);
@@ -3300,7 +3305,16 @@ function checkLockPin(){
 }
 
 /* ─── SERVICE WORKER ─── */
-if('serviceWorker'in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+// Desregistra qualquer Service Worker existente — o SW causava conflito com o Supabase SDK
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(regs => {
+    regs.forEach(r => r.unregister());
+  });
+  // Limpa todos os caches do SW
+  if ('caches' in window) {
+    caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+  }
+}
 
 /* ─── BOOT ─── */
 /* ─── BOOT ─── */
@@ -3332,7 +3346,13 @@ async function boot() {
       _sb = supabase.createClient(url, key, {
         auth: { persistSession: false, autoRefreshToken: false },
         realtime: { params: { eventsPerSecond: -1 } },
-        global: { fetch: (...args) => fetch(...args) }
+        global: { fetch: (input, init) => {
+          // Remove headers que causam DataCloneError com Service Worker
+          if (init?.headers instanceof Headers) {
+            init = { ...init, headers: Object.fromEntries(init.headers.entries()) };
+          }
+          return fetch(input, init);
+        }}
       });
       const { error } = await _sb.from('categories').select('key').limit(1);
       if (error) throw error;
