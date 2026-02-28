@@ -1,43 +1,33 @@
 /* ══════════════════════════════════════════════════════
-   Controle Financeiro do Décio — Service Worker v1.0
-   Cache strategy: cache-first for assets, network-first for API
+   Pag. D&B — Service Worker v2.0
+   Estratégia: network-first para HTML, cache para assets estáticos
+   Supabase API nunca é interceptada pelo SW
 ══════════════════════════════════════════════════════ */
 
-const CACHE_NAME = 'financeiro-decio-v1';
-const CACHE_VERSION = '1.0.0';
+const CACHE_NAME = 'pag-db-v3';
 
-// Assets to cache on install
-const PRECACHE_URLS = [
-  './',
-  './index.html',
+const STATIC_ASSETS = [
   './manifest.json',
   './icon.svg',
   './icon-192.png',
   './icon-512.png',
-  'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap',
 ];
 
 /* ─── INSTALL ─── */
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => {
-      // Cache local assets; don't fail on font CDN errors
-      const localAssets = PRECACHE_URLS.filter(u => !u.startsWith('http'));
-      return cache.addAll(localAssets).catch(() => {});
-    }).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME)
+      .then(cache => cache.addAll(STATIC_ASSETS).catch(() => {}))
+      .then(() => self.skipWaiting())
   );
 });
 
-/* ─── ACTIVATE ─── */
+/* ─── ACTIVATE: apaga todos os caches antigos ─── */
 self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(
-        keys
-          .filter(key => key !== CACHE_NAME)
-          .map(key => caches.delete(key))
-      )
-    ).then(() => self.clients.claim())
+    caches.keys()
+      .then(keys => Promise.all(keys.map(key => caches.delete(key))))
+      .then(() => self.clients.claim())
   );
 });
 
@@ -46,30 +36,51 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Skip non-GET, Chrome extensions, and browser-internal requests
-  if (request.method !== 'GET') return;
-  if (url.protocol === 'chrome-extension:') return;
-  if (url.protocol === 'data:') return;
+  // Nunca interceptar chamadas ao Supabase
+  if (url.hostname.includes('supabase.co')) return;
 
-  // Google Fonts: stale-while-revalidate
-  if (url.hostname.includes('fonts.googleapis.com') ||
-      url.hostname.includes('fonts.gstatic.com')) {
+  // Nunca interceptar métodos não-GET
+  if (request.method !== 'GET') return;
+
+  // Chrome extensions / data URLs
+  if (url.protocol === 'chrome-extension:' || url.protocol === 'data:') return;
+
+  // index.html: sempre busca da rede (network-first), sem cache
+  if (url.pathname.endsWith('/') || url.pathname.endsWith('index.html') || url.pathname.endsWith('school-ledger/')) {
+    event.respondWith(
+      fetch(request).catch(() => caches.match('./index.html'))
+    );
+    return;
+  }
+
+  // Fontes Google: cache com revalidação
+  if (url.hostname.includes('fonts.googleapis.com') || url.hostname.includes('fonts.gstatic.com')) {
     event.respondWith(staleWhileRevalidate(request));
     return;
   }
 
-  // App shell and local assets: cache-first
-  if (url.origin === self.location.origin) {
+  // Assets estáticos (ícones, manifesto): cache-first
+  if (STATIC_ASSETS.some(a => url.pathname.endsWith(a.replace('./', '')))) {
     event.respondWith(cacheFirst(request));
     return;
   }
-});
 
-/* ─── STRATEGIES ─── */
+  // Todo o resto: network-first
+  event.respondWith(networkFirst(request));
+});
 
 async function cacheFirst(request) {
   const cached = await caches.match(request);
   if (cached) return cached;
+  const response = await fetch(request);
+  if (response.ok) {
+    const cache = await caches.open(CACHE_NAME);
+    cache.put(request, response.clone());
+  }
+  return response;
+}
+
+async function networkFirst(request) {
   try {
     const response = await fetch(request);
     if (response.ok) {
@@ -78,55 +89,23 @@ async function cacheFirst(request) {
     }
     return response;
   } catch {
-    // Offline fallback: return index.html for navigation requests
-    if (request.mode === 'navigate') {
-      return caches.match('./index.html');
-    }
-    return new Response('Offline', { status: 503 });
+    return caches.match(request) || new Response('Offline', { status: 503 });
   }
 }
 
 async function staleWhileRevalidate(request) {
   const cached = await caches.match(request);
   const fetchPromise = fetch(request).then(response => {
-    if (response.ok) {
-      caches.open(CACHE_NAME).then(cache => cache.put(request, response.clone()));
-    }
+    if (response.ok) caches.open(CACHE_NAME).then(c => c.put(request, response.clone()));
     return response;
   }).catch(() => null);
-  return cached || await fetchPromise || new Response('', { status: 503 });
+  return cached || await fetchPromise;
 }
 
-/* ─── BACKGROUND SYNC ─── */
-// Reserved for future use (e.g. sync financial data)
-self.addEventListener('sync', event => {
-  if (event.tag === 'sync-data') {
-    // Future: sync to cloud backup
-  }
-});
-
-/* ─── PUSH NOTIFICATIONS ─── */
-// Reserved for future use (e.g. bill due reminders)
-self.addEventListener('push', event => {
-  const data = event.data?.json() || {};
-  const title = data.title || 'Controle Financeiro do Décio';
-  const options = {
-    body: data.body || 'Você tem uma notificação financeira.',
-    icon: './icon-192.png',
-    badge: './icon-192.png',
-    data: data.url || '/',
-    vibrate: [200, 100, 200],
-    actions: [
-      { action: 'open', title: 'Abrir' },
-      { action: 'dismiss', title: 'Dispensar' },
-    ]
-  };
-  event.waitUntil(self.registration.showNotification(title, options));
-});
-
-self.addEventListener('notificationclick', event => {
-  event.notification.close();
-  if (event.action !== 'dismiss') {
-    event.waitUntil(clients.openWindow(event.notification.data));
+/* ─── MENSAGEM: limpar cache sob demanda ─── */
+self.addEventListener('message', event => {
+  if (event.data === 'CLEAR_CACHE') {
+    caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k))))
+      .then(() => event.source?.postMessage('CACHE_CLEARED'));
   }
 });
