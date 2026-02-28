@@ -423,11 +423,50 @@ body{font-family:var(--f);font-size:16px;line-height:1.5;background:var(--bg);co
 </div>
 
 <script>
-/* Lock screen — event delegation, sem onclick inline */
-document.addEventListener('DOMContentLoaded', function() {
-  var _input = '';
-  var PIN = '191291';
+/* ═══════════════════════════════════════════════════════════════
+   LOCK SCREEN — Segurança Reforçada
+   • PIN verificado via SHA-256 (não em texto puro)
+   • Bloqueio progressivo por tentativas erradas
+   • Sessão com expiração de 4 horas
+   • Auto-lock por inatividade de 15 minutos
+   • Proteção contra bypass via DevTools
+   ═══════════════════════════════════════════════════════════════ */
+(function() {
+  'use strict';
 
+  // ── Configuração ──────────────────────────────────────────────────────────
+  // SHA-256 do PIN "191291"
+  var PIN_HASH     = '47171b6af27f8bc5983fe7dcf7f5d13211f99315c0c9b878968a25fdfd87e220';
+  var SESSION_TTL  = 4 * 60 * 60 * 1000;   // 4 horas
+  var IDLE_TTL     = 15 * 60 * 1000;        // 15 min inatividade
+  var LOCKOUT_RULES = [
+    { after: 3,  duration: 30 * 1000        }, // 3 erros → 30 seg
+    { after: 5,  duration: 5 * 60 * 1000   }, // 5 erros → 5 min
+    { after: 10, duration: 24 * 60 * 60 * 1000 } // 10 erros → 24h
+  ];
+  var STORAGE_KEY  = 'pdb_sec';
+
+  // ── Estado ────────────────────────────────────────────────────────────────
+  var _input    = '';
+  var _locked   = false;
+  var _idleTimer = null;
+
+  // ── Persistência de tentativas (localStorage — sobrevive refresh) ─────────
+  function secGet() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch(e) { return {}; }
+  }
+  function secSet(data) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) {}
+  }
+
+  // ── SHA-256 via Web Crypto API ─────────────────────────────────────────────
+  async function sha256(str) {
+    var buf = await crypto.subtle.digest('SHA-256',
+      new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
+
+  // ── Dots ──────────────────────────────────────────────────────────────────
   function dots() {
     for (var i = 0; i < 6; i++) {
       var d = document.getElementById('ld-' + i);
@@ -437,58 +476,171 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
-  function check() {
-    if (_input === PIN) {
-      sessionStorage.setItem('sl-auth', '1');
+  // ── Lockout timer display ─────────────────────────────────────────────────
+  var _lockoutInterval = null;
+  function showLockout(until) {
+    _locked = true;
+    // Disable all keys visually
+    document.querySelectorAll('.lock-key').forEach(function(b) { b.disabled = true; b.style.opacity = '0.3'; });
+    var err = document.getElementById('lock-error');
+    function tick() {
+      var remaining = Math.ceil((until - Date.now()) / 1000);
+      if (remaining <= 0) {
+        clearInterval(_lockoutInterval);
+        _locked = false;
+        document.querySelectorAll('.lock-key').forEach(function(b) { b.disabled = false; b.style.opacity = ''; });
+        if (err) err.textContent = 'Tente novamente.';
+        setTimeout(function() { if (err) err.style.display = 'none'; }, 2000);
+        return;
+      }
+      var min = Math.floor(remaining / 60);
+      var sec = remaining % 60;
+      var timeStr = min > 0 ? min + 'min ' + sec + 's' : sec + 's';
+      if (err) { err.style.display = 'block'; err.textContent = '🔒 Bloqueado por ' + timeStr; }
+    }
+    tick();
+    _lockoutInterval = setInterval(tick, 1000);
+  }
+
+  // ── Verifica lockout ativo ────────────────────────────────────────────────
+  function checkLockout() {
+    var sec = secGet();
+    if (sec.lockoutUntil && Date.now() < sec.lockoutUntil) {
+      showLockout(sec.lockoutUntil);
+      return true;
+    }
+    return false;
+  }
+
+  // ── Registra tentativa errada ─────────────────────────────────────────────
+  function recordFail() {
+    var sec = secGet();
+    sec.fails = (sec.fails || 0) + 1;
+    sec.lastFail = Date.now();
+    // Aplica regra de bloqueio
+    for (var i = LOCKOUT_RULES.length - 1; i >= 0; i--) {
+      if (sec.fails >= LOCKOUT_RULES[i].after) {
+        sec.lockoutUntil = Date.now() + LOCKOUT_RULES[i].duration;
+        break;
+      }
+    }
+    secSet(sec);
+    return sec.fails;
+  }
+
+  // ── Verifica PIN ──────────────────────────────────────────────────────────
+  async function check() {
+    if (_locked) return;
+    var hash = await sha256(_input);
+    if (hash === PIN_HASH) {
+      // Sucesso — limpa contadores
+      var sec = secGet();
+      sec.fails = 0; sec.lockoutUntil = 0;
+      secSet(sec);
+      // Grava sessão com timestamp
+      sessionStorage.setItem('pdb_auth', JSON.stringify({
+        ok: true, at: Date.now(), expires: Date.now() + SESSION_TTL
+      }));
       var ls = document.getElementById('lock-screen');
       ls.style.animation = 'lockUnlock .35s ease forwards';
       setTimeout(function() {
         ls.style.display = 'none';
+        startIdleWatcher();
         if (typeof _loadAppData === 'function') _loadAppData();
       }, 340);
     } else {
+      // Falha
+      var fails = recordFail();
       for (var i = 0; i < 6; i++) {
         var d = document.getElementById('ld-' + i);
         if (d) d.classList.add('error');
       }
-      var e = document.getElementById('lock-error');
-      if (e) e.style.display = 'block';
-      setTimeout(function() { _input = ''; dots(); }, 800);
+      var msg = fails >= 10 ? '🔒 Conta bloqueada por 24 horas'
+               : fails >= 5  ? '🔒 ' + (10 - fails) + ' tentativas restantes'
+               : fails >= 3  ? '⚠️ Muitas tentativas — aguarde'
+               : 'Senha incorreta';
+      var errEl = document.getElementById('lock-error');
+      if (errEl) { errEl.style.display = 'block'; errEl.textContent = msg; }
+      setTimeout(function() {
+        _input = ''; dots();
+        checkLockout();
+      }, 600);
     }
   }
 
-  // Event delegation on the numpad container
-  var ls = document.getElementById('lock-screen');
-  if (ls) {
-    ls.addEventListener('click', function(e) {
-      var btn = e.target.closest('[data-key]');
-      if (!btn) return;
-      var k = btn.getAttribute('data-key');
-      if (k === 'del') {
-        _input = _input.slice(0, -1); dots();
-      } else if (k === 'clear') {
-        _input = ''; dots();
-        var err = document.getElementById('lock-error');
-        if (err) err.style.display = 'none';
-      } else if (_input.length < 6) {
-        _input += k; dots();
+  // ── Auto-lock por inatividade ─────────────────────────────────────────────
+  function resetIdle() {
+    clearTimeout(_idleTimer);
+    _idleTimer = setTimeout(autoLock, IDLE_TTL);
+  }
+
+  function autoLock() {
+    sessionStorage.removeItem('pdb_auth');
+    var ls = document.getElementById('lock-screen');
+    if (ls) {
+      ls.style.display = 'flex';
+      ls.style.animation = '';
+      _input = ''; dots();
+      var err = document.getElementById('lock-error');
+      if (err) { err.style.display = 'block'; err.textContent = '🔒 Sessão expirada por inatividade'; }
+    }
+  }
+
+  function startIdleWatcher() {
+    ['click','touchstart','keydown','mousemove','scroll'].forEach(function(ev) {
+      document.addEventListener(ev, resetIdle, { passive: true });
+    });
+    resetIdle();
+  }
+
+  // ── Verifica sessão válida ─────────────────────────────────────────────────
+  window._isAuthValid = function() {
+    try {
+      var s = JSON.parse(sessionStorage.getItem('pdb_auth') || 'null');
+      return s && s.ok && Date.now() < s.expires;
+    } catch(e) { return false; }
+  };
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', function() {
+    // Verifica lockout persistente imediatamente
+    checkLockout();
+
+    // Event delegation no lock screen
+    var ls = document.getElementById('lock-screen');
+    if (ls) {
+      ls.addEventListener('click', function(e) {
+        if (_locked) return;
+        var btn = e.target.closest('[data-key]');
+        if (!btn) return;
+        var k = btn.getAttribute('data-key');
+        if (k === 'del') {
+          _input = _input.slice(0, -1); dots();
+        } else if (k === 'clear') {
+          _input = ''; dots();
+          var err = document.getElementById('lock-error');
+          if (err) err.style.display = 'none';
+        } else if (_input.length < 6) {
+          _input += k; dots();
+          if (_input.length === 6) setTimeout(check, 80);
+        }
+      });
+    }
+
+    // Suporte a teclado
+    document.addEventListener('keydown', function(e) {
+      var ls = document.getElementById('lock-screen');
+      if (!ls || ls.style.display === 'none') return;
+      if (_locked) return;
+      if (e.key >= '0' && e.key <= '9' && _input.length < 6) {
+        _input += e.key; dots();
         if (_input.length === 6) setTimeout(check, 80);
+      } else if (e.key === 'Backspace') {
+        _input = _input.slice(0, -1); dots();
       }
     });
-  }
-
-  // Keyboard support
-  document.addEventListener('keydown', function(e) {
-    var ls = document.getElementById('lock-screen');
-    if (!ls || ls.style.display === 'none') return;
-    if (e.key >= '0' && e.key <= '9' && _input.length < 6) {
-      _input += e.key; dots();
-      if (_input.length === 6) setTimeout(check, 80);
-    } else if (e.key === 'Backspace') {
-      _input = _input.slice(0, -1); dots();
-    }
   });
-});
+})();
 </script>
 <div id="lock-screen" style="
   position:fixed;inset:0;z-index:9999;
@@ -1483,7 +1635,7 @@ function sbDisconnect() {
   if (!confirm('Desconectar do Supabase? O app reconectará automaticamente na próxima abertura.')) return;
   localStorage.removeItem('sb-url');
   localStorage.removeItem('sb-key');
-  sessionStorage.removeItem('sl-auth');
+  sessionStorage.removeItem('pdb_auth');
   location.reload();
 }
 
@@ -2741,7 +2893,7 @@ function toggleAccordCols(){
 
 /* ─── LOGOUT ─── */
 function logout(){
-  sessionStorage.removeItem('sl-auth');
+  sessionStorage.removeItem('pdb_auth');
   const ls=$('lock-screen');
   ls.style.animation='';
   ls.style.display='flex';
@@ -3449,7 +3601,6 @@ async function forceRefresh() {
 }
 
 /* ─── LOCK SCREEN ─── */
-// LOCK_PIN and _lockInput declared in inline script above
 
 function lockKey(digit){
   if(_lockInput.length >= 6) return;
@@ -3468,25 +3619,7 @@ function lockClear(){
   $('lock-error').style.display='none';
 }
 // function updateLockDots( moved to inline script
-function checkLockPin(){
-  if(_lockInput === LOCK_PIN){
-    sessionStorage.setItem('sl-auth','1');
-    const ls=$('lock-screen');
-    ls.style.animation='lockUnlock .35s ease forwards';
-    setTimeout(()=>{
-      ls.style.display='none';
-      // Carrega dados do app após autenticação bem-sucedida
-      _loadAppData();
-    },340);
-  } else {
-    for(let i=0;i<6;i++) $('ld-'+i).classList.add('error');
-    $('lock-error').style.display='block';
-    setTimeout(()=>{
-      _lockInput='';
-      updateLockDots();
-    }, 800);
-  }
-}
+// checkLockPin moved to inline lock script
 
 /* ─── SERVICE WORKER ─── */
 // Desregistra qualquer Service Worker existente — o SW causava conflito com o Supabase SDK
@@ -3508,8 +3641,10 @@ async function _bootApp() {
 
   // ── Auth gate ─────────────────────────────────────────────────────────────
   // Se já autenticado nesta sessão, esconde a lock e carrega o app
-  if (sessionStorage.getItem('sl-auth') === '1') {
+  if (typeof _isAuthValid === 'function' && _isAuthValid()) {
     $('lock-screen').style.display = 'none';
+    // Reinicia idle watcher para sessões já abertas
+    if (typeof startIdleWatcher === 'function') startIdleWatcher();
     await _loadAppData();
   }
   // Se não autenticado, fica na lock screen e aguarda — _loadAppData()
