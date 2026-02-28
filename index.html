@@ -537,6 +537,13 @@ document.addEventListener('DOMContentLoaded', function() {
     border:1px solid rgba(255,107,107,.2);
   ">Senha incorreta — tente novamente</div>
 
+  <!-- Debug status (visível durante conexão) -->
+  <div id="lock-debug" style="
+    max-width:320px;width:100%;margin-bottom:16px;
+    font-size:11px;color:rgba(255,255,255,.5);text-align:center;
+    min-height:16px;line-height:1.5;word-break:break-all;
+  ">Iniciando…</div>
+
   <!-- Numpad -->
   <div style="display:grid;grid-template-columns:repeat(3,72px);gap:12px">
     <button class="lock-key" data-key="1">1</button>
@@ -3401,15 +3408,20 @@ async function _loadAppData() {
   checkSupabaseConn(); // atualiza indicador após carregar dados
 }
 
+function _dbg(msg) {
+  console.log('[boot]', msg);
+  const el = document.getElementById('lock-debug');
+  if (el) el.textContent = msg;
+}
+
 async function boot() {
-  // ── Auto-connect usando credenciais embutidas no script ──────────────────
-  // Se SUPABASE_URL e SUPABASE_ANON_KEY estiverem definidos no config,
-  // conecta diretamente sem mostrar a tela de setup.
-  // Credenciais embutidas no topo do script — sempre disponíveis
+  _dbg('Iniciando boot…');
   const url = SUPABASE_URL;
   const key = SUPABASE_ANON_KEY;
+  _dbg('URL: ' + (url ? url.slice(0,40) + '…' : 'NÃO DEFINIDA'));
 
   if (url && key) {
+    _dbg('Limpando Service Worker…');
     // Desregistra SW antes de conectar (evita DataCloneError)
     if ('serviceWorker' in navigator) {
       try {
@@ -3422,7 +3434,7 @@ async function boot() {
       } catch(_) {}
     }
 
-    // Tenta conectar — até 2 tentativas
+    _dbg('Conectando ao Supabase…');
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         _sb = supabase.createClient(url, key, {
@@ -3435,15 +3447,17 @@ async function boot() {
             return fetch(input, init);
           }}
         });
+        _dbg('Tentativa ' + attempt + ': testando query…');
         const { error } = await _sb.from('categories').select('key').limit(1);
         if (error) throw error;
-        // Conectado com sucesso
+        _dbg('✅ Conectado!');
         $('sb-setup-screen').style.display = 'none';
         const bt = $('db-source-text');
         if(bt) bt.textContent = '✅ Supabase conectado — aguardando senha…';
         await _bootApp();
         return;
       } catch (e) {
+        _dbg('❌ Tentativa ' + attempt + ': ' + e.message);
         console.error('Supabase attempt', attempt, 'failed:', e.message);
         if (attempt === 2) {
           const bt = $('db-source-text');
