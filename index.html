@@ -676,7 +676,7 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="page on" id="page-dash">
   <div class="pg-title">Dashboard</div>
   <div id="db-source-banner" style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;color:var(--t-3);padding:6px 14px;background:var(--fill-2);border-radius:var(--r);margin-bottom:8px">
-    <span>🗄️</span><span id="db-source-text">Conectando ao Supabase…</span>
+    <span>🗄️</span><span id="db-source-text">Aguardando autenticação…</span>
     <button onclick="forceRefresh()" style="margin-left:auto;border:none;background:var(--accent-l);color:var(--accent);border-radius:var(--r);padding:3px 10px;font:600 11px/1 var(--f);cursor:pointer">↻ Atualizar</button>
   </div>
   <div id="dash-alerts" class="alert-bar" style="display:none"></div>
@@ -3398,6 +3398,7 @@ async function _loadAppData() {
   await loadParties();
   await initYearFilter();
   renderDash();
+  checkSupabaseConn(); // atualiza indicador após carregar dados
 }
 
 async function boot() {
@@ -3409,33 +3410,52 @@ async function boot() {
   const key = SUPABASE_ANON_KEY;
 
   if (url && key) {
-    try {
-      _sb = supabase.createClient(url, key, {
-        auth: { persistSession: false, autoRefreshToken: false },
-        realtime: { params: { eventsPerSecond: -1 } },
-        global: { fetch: (input, init) => {
-          // Remove headers que causam DataCloneError com Service Worker
-          if (init?.headers instanceof Headers) {
-            init = { ...init, headers: Object.fromEntries(init.headers.entries()) };
-          }
-          return fetch(input, init);
-        }}
-      });
-      const { error } = await _sb.from('categories').select('key').limit(1);
-      if (error) throw error;
-      // Força reload do schema cache do PostgREST (evita erro file_data stale)
-      try { await _sb.rpc('reload_schema'); } catch(_){} // ignora se não existir
-      $('sb-setup-screen').style.display = 'none';
-      await _bootApp();
-      checkSupabaseConn(); // update connection indicator
-      return;
-    } catch (e) {
-      console.error('Supabase connection failed:', e.message);
-      // Mostra tela de setup manual como fallback
-      $('sb-setup-screen').style.display = 'flex';
-      const errEl = $('sb-setup-err');
-      if (errEl) { errEl.textContent = '❌ Conexão automática falhou: ' + e.message; errEl.style.display = 'block'; }
-      _sb = null;
+    // Desregistra SW antes de conectar (evita DataCloneError)
+    if ('serviceWorker' in navigator) {
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map(k => caches.delete(k)));
+        }
+      } catch(_) {}
+    }
+
+    // Tenta conectar — até 2 tentativas
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        _sb = supabase.createClient(url, key, {
+          auth: { persistSession: false, autoRefreshToken: false },
+          realtime: { params: { eventsPerSecond: -1 } },
+          global: { fetch: (input, init) => {
+            if (init?.headers instanceof Headers) {
+              init = { ...init, headers: Object.fromEntries(init.headers.entries()) };
+            }
+            return fetch(input, init);
+          }}
+        });
+        const { error } = await _sb.from('categories').select('key').limit(1);
+        if (error) throw error;
+        // Conectado com sucesso
+        $('sb-setup-screen').style.display = 'none';
+        const bt = $('db-source-text');
+        if(bt) bt.textContent = '✅ Supabase conectado — aguardando senha…';
+        await _bootApp();
+        return;
+      } catch (e) {
+        console.error('Supabase attempt', attempt, 'failed:', e.message);
+        if (attempt === 2) {
+          const bt = $('db-source-text');
+          if(bt) bt.textContent = '❌ Falha ao conectar: ' + e.message;
+          $('sb-setup-screen').style.display = 'flex';
+          const errEl = $('sb-setup-err');
+          if (errEl) { errEl.textContent = '❌ Conexão falhou: ' + e.message; errEl.style.display = 'block'; }
+          _sb = null;
+        } else {
+          await new Promise(r => setTimeout(r, 1000)); // espera 1s antes de tentar de novo
+        }
+      }
     }
   } else {
     // Sem config → mostra tela de setup manual
